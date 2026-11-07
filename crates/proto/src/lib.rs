@@ -9,8 +9,8 @@ mod secret;
 mod signal;
 
 pub use api::{
-    ApiErrorBody, ErrorCode, HubResponse, LONG_POLL, MAX_RECORDS, NodeInfo, PROTOCOL_VERSION,
-    RegisterRequest, RegisterResponse,
+    ApiErrorBody, ErrorCode, HubResponse, LONG_POLL, MAX_AVOID, MAX_RECORDS, NodeInfo,
+    PROTOCOL_VERSION, RegisterRequest, RegisterResponse,
 };
 pub use dns::{
     CnameTarget, DNS_PORT, DnsError, DnsName, DnsRecord, MAX_LABEL_LEN, MAX_NAME_LEN, RecordData,

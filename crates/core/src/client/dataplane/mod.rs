@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use bunnyhop_config::InterfaceConfig;
-use bunnyhop_net::{Datagram, Dataplane, NetError, NodeRules, RuleSpec, StunSocket};
-use bunnyhop_proto::{Addresses, NodeId, PacketRule, PrivateKey, PublicKey};
+use bunnyhop_net::{Datagram, Dataplane, MeshRules, NetError, NodeRules, RuleSpec, StunSocket};
+use bunnyhop_proto::{NodeId, PacketRule, PrivateKey, PublicKey};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 
 use self::kernel::Kernel;
@@ -32,21 +32,36 @@ pub enum DataplaneError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
-    pub addresses: Addresses,
-    pub prefixes: Vec<IpNet>,
+    pub meshes: Vec<MeshPlan>,
     pub mtu: u16,
     pub peers: Vec<PeerPlan>,
     pub exit: Option<ExitPlan>,
-    pub inbound: Vec<PacketRule>,
     pub local_dns: Option<IpAddr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeshPlan {
+    pub addresses: Vec<IpAddr>,
+    pub prefixes: Vec<IpNet>,
+    pub peers: Vec<IpAddr>,
+    pub inbound: Vec<PacketRule>,
     pub exit_clients: Vec<IpNet>,
+}
+
+impl MeshPlan {
+    fn source(&self, net: &IpNet) -> Option<IpAddr> {
+        self.addresses
+            .iter()
+            .copied()
+            .find(|address| address.is_ipv4() == net.addr().is_ipv4())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerPlan {
     pub id: NodeId,
     pub key: PublicKey,
-    pub addresses: Addresses,
+    pub addresses: Vec<IpAddr>,
     pub path: Path,
     pub relay: Option<usize>,
     pub proxy: Option<SocketAddr>,
@@ -63,7 +78,17 @@ pub enum Path {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExitPlan {
     pub peer: Option<PublicKey>,
+    pub sources: Vec<IpAddr>,
     pub bypass: Vec<IpAddr>,
+}
+
+impl ExitPlan {
+    fn source(&self, net: &IpNet) -> Option<IpAddr> {
+        self.sources
+            .iter()
+            .copied()
+            .find(|address| address.is_ipv4() == net.addr().is_ipv4())
+    }
 }
 
 impl Plan {
@@ -71,21 +96,29 @@ impl Plan {
         self.exit.as_ref()?.peer
     }
 
-    const fn source(&self, net: &IpNet) -> IpAddr {
-        match net {
-            IpNet::V4(_) => IpAddr::V4(self.addresses.v4),
-            IpNet::V6(_) => IpAddr::V6(self.addresses.v6),
-        }
+    fn addresses(&self) -> Vec<IpNet> {
+        let addresses: BTreeSet<IpAddr> = self
+            .meshes
+            .iter()
+            .flat_map(|mesh| mesh.addresses.iter().copied())
+            .collect();
+        addresses.into_iter().map(IpNet::from).collect()
     }
 
     fn firewall(&self, interface: String) -> NodeRules {
         NodeRules {
             interface,
-            mesh: self.prefixes.clone(),
-            addresses: self.addresses.iter().collect(),
-            inbound: self.inbound.clone(),
+            meshes: self
+                .meshes
+                .iter()
+                .map(|mesh| MeshRules {
+                    prefixes: mesh.prefixes.clone(),
+                    addresses: mesh.addresses.clone(),
+                    inbound: mesh.inbound.clone(),
+                    exit_clients: mesh.exit_clients.clone(),
+                })
+                .collect(),
             local_dns: self.local_dns,
-            exit_clients: self.exit_clients.clone(),
         }
     }
 

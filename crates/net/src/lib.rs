@@ -17,7 +17,7 @@ pub use model::{
     DeviceSpec, DeviceState, LinkDns, LocalAddress, PeerOp, PeerSpec, PeerState, RouteSpec,
     RuleSpec,
 };
-pub use nft::NodeRules;
+pub use nft::{MeshRules, NodeRules};
 pub use plan::plan_peers;
 pub use stun_socket::{Datagram, StunSocket, is_stun};
 

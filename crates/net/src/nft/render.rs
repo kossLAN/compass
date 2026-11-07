@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::net::IpAddr;
 
@@ -27,6 +28,13 @@ impl Family {
         matches!(
             (self, net),
             (Self::V4, IpNet::V4(_)) | (Self::V6, IpNet::V6(_))
+        )
+    }
+
+    const fn holds(self, address: IpAddr) -> bool {
+        matches!(
+            (self, address),
+            (Self::V4, IpAddr::V4(_)) | (Self::V6, IpAddr::V6(_))
         )
     }
 
@@ -137,13 +145,17 @@ fn list(items: impl IntoIterator<Item = String>) -> String {
     }
 }
 
-fn input_chain(interface: &str, mesh: &[IpNet], addresses: &[IpAddr]) -> Vec<String> {
+fn input_chain(
+    interface: &str,
+    prefixes: &BTreeSet<IpNet>,
+    addresses: &BTreeSet<IpAddr>,
+) -> Vec<String> {
     let mut rules = vec![
         "iifname \"lo\" accept".to_owned(),
         format!("iifname {interface} jump mesh"),
     ];
 
-    for net in mesh {
+    for net in prefixes {
         let ip = Family::of(net.addr()).selector();
         rules.push(format!("{ip} saddr {net} drop"));
     }
@@ -213,17 +225,40 @@ pub fn render(rules: &NodeRules) -> String {
     mesh.push("ct direction reply ct state established accept".to_owned());
     mesh.push("ct state related accept".to_owned());
 
-    for (index, rule) in rules.inbound.iter().enumerate() {
-        mesh.extend(render_packet_rule(&mut table, index, rule));
+    for (index, rules) in rules.meshes.iter().enumerate() {
+        for (rule_index, rule) in rules.inbound.iter().enumerate() {
+            let name = format!("mesh{index}_rule{rule_index}");
+            mesh.extend(render_packet_rule(
+                &mut table,
+                &name,
+                &rules.addresses,
+                rule,
+            ));
+        }
     }
 
     mesh.push("counter drop".to_owned());
 
+    let exit_clients: Vec<IpNet> = rules
+        .meshes
+        .iter()
+        .flat_map(|rules| rules.exit_clients.iter().copied())
+        .collect();
+    let prefixes: BTreeSet<IpNet> = rules
+        .meshes
+        .iter()
+        .flat_map(|rules| rules.prefixes.iter().copied())
+        .collect();
+    let addresses: BTreeSet<IpAddr> = rules
+        .meshes
+        .iter()
+        .flat_map(|rules| rules.addresses.iter().copied())
+        .collect();
     let mut forward = Vec::new();
     let mut postrouting = Vec::new();
 
     for family in Family::ALL {
-        if let Some(clients) = table.set("exit_clients", family, &rules.exit_clients) {
+        if let Some(clients) = table.set("exit_clients", family, &exit_clients) {
             let ip = family.selector();
             forward.push(format!(
                 "iifname {interface} {ip} saddr @{clients} oifname != {interface} accept"
@@ -244,7 +279,7 @@ pub fn render(rules: &NodeRules) -> String {
     table.chain(
         "input",
         Some(Hook::Input),
-        &input_chain(&interface, &rules.mesh, &rules.addresses),
+        &input_chain(&interface, &prefixes, &addresses),
     );
     table.chain("forward", Some(Hook::Forward), &forward);
 
@@ -256,7 +291,12 @@ pub fn render(rules: &NodeRules) -> String {
     table.finish()
 }
 
-fn render_packet_rule(table: &mut Table, index: usize, rule: &PacketRule) -> Vec<String> {
+fn render_packet_rule(
+    table: &mut Table,
+    name: &str,
+    addresses: &[IpAddr],
+    rule: &PacketRule,
+) -> Vec<String> {
     Family::ALL
         .into_iter()
         .filter_map(|family| {
@@ -266,10 +306,21 @@ fn render_packet_rule(table: &mut Table, index: usize, rule: &PacketRule) -> Vec
                 Matches::Nothing => return None,
             };
 
-            let set = table.set(&format!("rule{index}"), family, &rule.src)?;
+            let destinations: Vec<String> = addresses
+                .iter()
+                .filter(|address| family.holds(**address))
+                .map(ToString::to_string)
+                .collect();
+
+            if destinations.is_empty() {
+                return None;
+            }
+
+            let set = table.set(name, family, &rule.src)?;
+            let ip = family.selector();
             Some(format!(
-                "{} saddr @{set}{protocol} accept",
-                family.selector()
+                "{ip} daddr {} {ip} saddr @{set}{protocol} accept",
+                list(destinations)
             ))
         })
         .collect()

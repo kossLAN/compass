@@ -1,9 +1,10 @@
 use std::io::{self, Write as _};
 
+use std::net::IpAddr;
+
 use crate::control::Control;
 use bunnyhop_proto::{
-    Addresses, ExitNodeChoice, LighthouseState, PathKind, Phase, RecordEntry, RecordState,
-    StatusReport,
+    ExitNodeChoice, LighthouseState, PathKind, Phase, RecordEntry, RecordState, StatusReport,
 };
 use serde::Serialize;
 
@@ -60,8 +61,13 @@ fn print_status(report: &StatusReport) -> anyhow::Result<()> {
             LighthouseState::Rejected(reason) => format!("rejected: {reason}"),
         };
 
+        let mesh = lighthouse
+            .mesh
+            .as_ref()
+            .map(|mesh| format!("{mesh}, "))
+            .unwrap_or_default();
         let relay = if lighthouse.relay { ", relaying" } else { "" };
-        writeln!(out, "lighthouse: {} ({state}{relay})", lighthouse.url)?;
+        writeln!(out, "lighthouse: {} ({mesh}{state}{relay})", lighthouse.url)?;
     }
 
     if let Some(exit_node) = &report.exit_node {
@@ -74,13 +80,21 @@ fn print_status(report: &StatusReport) -> anyhow::Result<()> {
         writeln!(out, "exit:   {} ({state})", exit_node.peer)?;
     }
 
-    let Some(node) = &report.node else {
+    if report.nodes.is_empty() {
         return Ok(());
-    };
+    }
 
-    writeln!(out, "node:   {} ({})", node.fqdn, join(node.addresses))?;
+    for node in &report.nodes {
+        writeln!(
+            out,
+            "node:   {} ({}){}",
+            node.fqdn,
+            join(&node.addresses),
+            taken(&node.taken)
+        )?;
+    }
 
-    for endpoint in &node.observed_endpoints {
+    for endpoint in &report.observed_endpoints {
         writeln!(out, "public: {endpoint}")?;
     }
 
@@ -110,16 +124,16 @@ fn print_status(report: &StatusReport) -> anyhow::Result<()> {
             .map_or_else(|| "-".to_owned(), |secs| format!("{secs}s ago"));
 
         let name = if peer.exit_node {
-            format!("{} (exit)", peer.hostname)
+            format!("{} (exit)", peer.fqdn)
         } else {
-            peer.hostname.to_string()
+            peer.fqdn.clone()
         };
 
         writeln!(
             out,
             "{:<24} {:<34} {:<32} {}",
             name,
-            join(peer.addresses),
+            format!("{}{}", join(&peer.addresses), taken(&peer.taken)),
             path,
             handshake,
         )?;
@@ -130,7 +144,11 @@ fn print_status(report: &StatusReport) -> anyhow::Result<()> {
 
 fn print_records(records: &[RecordEntry]) -> anyhow::Result<()> {
     let mut out = io::stdout().lock();
-    writeln!(out, "{:<32} {:<6} {:<40} STATE", "NAME", "TYPE", "VALUE")?;
+    writeln!(
+        out,
+        "{:<24} {:<32} {:<6} {:<40} STATE",
+        "MESH", "NAME", "TYPE", "VALUE"
+    )?;
 
     for entry in records {
         let state = match entry.state {
@@ -141,7 +159,8 @@ fn print_records(records: &[RecordEntry]) -> anyhow::Result<()> {
 
         writeln!(
             out,
-            "{:<32} {:<6} {:<40} {}",
+            "{:<24} {:<32} {:<6} {:<40} {}",
+            entry.mesh.as_ref().map_or("-", |mesh| mesh.as_str()),
             entry.record.name.as_str(),
             entry.record.kind().as_str(),
             entry.record.data.to_string(),
@@ -152,10 +171,15 @@ fn print_records(records: &[RecordEntry]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn join(addresses: Addresses) -> String {
-    let addresses: Vec<String> = addresses
-        .iter()
-        .map(|address| address.to_string())
-        .collect();
+fn join(addresses: &[IpAddr]) -> String {
+    let addresses: Vec<String> = addresses.iter().map(ToString::to_string).collect();
     addresses.join(", ")
+}
+
+fn taken(addresses: &[IpAddr]) -> String {
+    if addresses.is_empty() {
+        String::new()
+    } else {
+        format!(" [in use by another mesh: {}]", join(addresses))
+    }
 }

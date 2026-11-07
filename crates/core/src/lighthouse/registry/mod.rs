@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 
 use bunnyhop_config::LighthouseConfig;
 use bunnyhop_proto::{
-    Addresses, DnsName, MAX_RECORDS, NodeId, NodeInfo, PublicKey, RegisterRequest, SecretHash,
-    Token,
+    Addresses, DnsName, MAX_AVOID, MAX_RECORDS, NodeId, NodeInfo, PublicKey, RegisterRequest,
+    SecretHash, Token,
 };
 
 pub use self::names::Names;
@@ -208,6 +208,12 @@ fn validate(info: &NodeInfo) -> Result<(), RegisterError> {
     if info.records.len() > MAX_RECORDS {
         return Err(RegisterError::Invalid(format!(
             "at most {MAX_RECORDS} records are allowed"
+        )));
+    }
+
+    if info.avoid.len() > MAX_AVOID {
+        return Err(RegisterError::Invalid(format!(
+            "at most {MAX_AVOID} addresses to avoid are allowed"
         )));
     }
 

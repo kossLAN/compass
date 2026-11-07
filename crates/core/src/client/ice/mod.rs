@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bunnyhop_net::Datagram;
-use bunnyhop_proto::{CandidateKind, IceCandidate, Network, NodeId, PublicKey, SignalMessage};
+use bunnyhop_proto::{CandidateKind, IceCandidate, NodeId, PublicKey, SignalMessage};
 use bytes::BytesMut;
 use ipnet::IpNet;
 use rtc_ice::crypto::RTCCryptoProvider;
@@ -59,7 +59,7 @@ pub struct IcePeer {
 enum Command {
     Peers {
         peers: Vec<IcePeer>,
-        network: Network,
+        prefixes: Vec<IpNet>,
     },
     Hubs(Vec<SocketAddr>),
     LocalNetworks(Vec<IpNet>),
@@ -102,7 +102,7 @@ impl IceHandle {
                 crypto,
                 local_networks,
                 observed: Vec::new(),
-                network: None,
+                prefixes: None,
                 peers: BTreeMap::new(),
                 hubs: BTreeMap::new(),
                 transactions: HashMap::new(),
@@ -114,8 +114,8 @@ impl IceHandle {
         Self { commands, task }
     }
 
-    pub fn set_peers(&self, peers: Vec<IcePeer>, network: Network) {
-        let _ = self.commands.send(Command::Peers { peers, network });
+    pub fn set_peers(&self, peers: Vec<IcePeer>, prefixes: Vec<IpNet>) {
+        let _ = self.commands.send(Command::Peers { peers, prefixes });
     }
 
     pub fn set_hubs(&self, hubs: Vec<SocketAddr>) {
@@ -144,7 +144,7 @@ struct IceService {
     crypto: Arc<dyn RTCCryptoProvider>,
     local_networks: Vec<IpNet>,
     observed: Vec<SocketAddr>,
-    network: Option<Network>,
+    prefixes: Option<Vec<IpNet>>,
     peers: BTreeMap<NodeId, PeerIce>,
     hubs: BTreeMap<SocketAddr, HubProbe>,
     transactions: HashMap<TransactionId, (Transaction, Instant)>,
@@ -197,8 +197,8 @@ impl IceService {
         let now = Instant::now();
 
         match command {
-            Command::Peers { peers, network } => {
-                self.network = Some(network);
+            Command::Peers { peers, prefixes } => {
+                self.prefixes = Some(prefixes);
                 let mut removed = Vec::new();
                 self.peers.retain(|id, state| {
                     let keep = peers.iter().any(|peer| peer.id == *id);
@@ -268,14 +268,14 @@ impl IceService {
             return;
         }
 
-        let Some(network) = &self.network else {
+        let Some(prefixes) = &self.prefixes else {
             return;
         };
 
         let remote_candidates: Vec<IceCandidate> = session
             .candidates
             .iter()
-            .filter(|candidate| candidate::usable(candidate, network))
+            .filter(|candidate| candidate::usable(candidate, prefixes))
             .copied()
             .collect();
         let candidates = self.candidates();

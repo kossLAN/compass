@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use bunnyhop_proto::{CandidateKind, IceCandidate, MAX_CANDIDATES, Network};
+use bunnyhop_proto::{CandidateKind, IceCandidate, MAX_CANDIDATES};
 use ipnet::IpNet;
 use rtc_ice::candidate::candidate_host::CandidateHostConfig;
 use rtc_ice::candidate::candidate_server_reflexive::CandidateServerReflexiveConfig;
@@ -30,7 +30,7 @@ pub fn gather(networks: &[IpNet], port: u16, observed: &[SocketAddr]) -> Vec<Ice
     candidates
 }
 
-pub fn usable(candidate: &IceCandidate, network: &Network) -> bool {
+pub fn usable(candidate: &IceCandidate, prefixes: &[IpNet]) -> bool {
     let address = candidate.address.ip();
 
     let unicast = match address {
@@ -42,7 +42,7 @@ pub fn usable(candidate: &IceCandidate, network: &Network) -> bool {
         && candidate.address.port() != 0
         && !address.is_unspecified()
         && !address.is_multicast()
-        && !network.contains(address)
+        && !prefixes.iter().any(|prefix| prefix.contains(&address))
 }
 
 pub fn to_rtc(candidate: &IceCandidate) -> Result<Candidate, Error> {

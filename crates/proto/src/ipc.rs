@@ -1,9 +1,9 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::{Addresses, DnsName, DnsRecord, NodeId, PublicKey, RecordState};
+use crate::{DnsName, DnsRecord, NodeId, PublicKey, RecordState};
 
 pub const MAX_IPC_LINE: usize = 64 * 1024;
 
@@ -45,7 +45,8 @@ pub struct StatusReport {
     pub phase: Phase,
     pub lighthouses: Vec<LighthouseStatus>,
     pub key: PublicKey,
-    pub node: Option<NodeStatus>,
+    pub observed_endpoints: Vec<SocketAddr>,
+    pub nodes: Vec<NodeStatus>,
     pub exit_node: Option<ExitNodeStatus>,
     pub peers: Vec<PeerStatus>,
 }
@@ -53,6 +54,7 @@ pub struct StatusReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LighthouseStatus {
     pub url: Url,
+    pub mesh: Option<DnsName>,
     pub state: LighthouseState,
     pub relay: bool,
 }
@@ -77,8 +79,8 @@ pub struct NodeStatus {
     pub id: NodeId,
     pub hostname: DnsName,
     pub fqdn: String,
-    pub addresses: Addresses,
-    pub observed_endpoints: Vec<SocketAddr>,
+    pub addresses: Vec<IpAddr>,
+    pub taken: Vec<IpAddr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,7 +94,9 @@ pub enum PathKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerStatus {
     pub hostname: DnsName,
-    pub addresses: Addresses,
+    pub fqdn: String,
+    pub addresses: Vec<IpAddr>,
+    pub taken: Vec<IpAddr>,
     pub online: bool,
     pub exit_node: bool,
     pub path: PathKind,
@@ -104,5 +108,6 @@ pub struct PeerStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordEntry {
     pub record: DnsRecord,
+    pub mesh: Option<DnsName>,
     pub state: Option<RecordState>,
 }

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::iter;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,7 +8,8 @@ use bunnyhop_config::{ClientConfig, ConfigError, read_key};
 use bunnyhop_net::Dataplane;
 use bunnyhop_proto::{
     AuthKey, DnsName, ExitNodeChoice, ExitNodeStatus, LighthouseState, LighthouseStatus, NetMap,
-    NodeInfo, NodeStatus, Phase, PrivateKey, RecordEntry, SignalEnvelope, StatusReport, Token,
+    Network, NodeInfo, NodeStatus, Phase, PrivateKey, RecordEntry, SecretHash, SignalEnvelope,
+    StatusReport, Token,
 };
 use ipnet::IpNet;
 use tokio::sync::{mpsc, watch};
@@ -18,6 +20,7 @@ use crate::client::api::ApiClient;
 use crate::client::endpoints::local_networks;
 use crate::client::engine::{Engine, ExitNode, Setup, View};
 use crate::client::ice::IceEvent;
+use crate::client::meshes;
 use crate::client::session::{Session, SessionEvent};
 
 const LOGOUT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -31,6 +34,8 @@ struct RunningSession {
 
 struct LighthouseConnection {
     url: Url,
+    mesh: usize,
+    auth_key: AuthKey,
     api: Option<ApiClient>,
     session: Option<RunningSession>,
     token: Option<Token>,
@@ -39,9 +44,11 @@ struct LighthouseConnection {
 }
 
 impl LighthouseConnection {
-    const fn new(url: Url) -> Self {
+    const fn new(url: Url, mesh: usize, auth_key: AuthKey) -> Self {
         Self {
             url,
+            mesh,
+            auth_key,
             api: None,
             session: None,
             token: None,
@@ -63,7 +70,6 @@ impl LighthouseConnection {
 
 pub struct Agent {
     config: ClientConfig,
-    auth_key: AuthKey,
     key: PrivateKey,
     dataplane: Arc<Dataplane>,
     engine: Option<Engine>,
@@ -75,7 +81,9 @@ pub struct Agent {
     events: mpsc::Sender<(u64, SessionEvent)>,
     failure: Option<String>,
     apply_error: Option<String>,
-    info: watch::Sender<NodeInfo>,
+    infos: Vec<watch::Sender<NodeInfo>>,
+    avoided: BTreeMap<usize, Vec<IpAddr>>,
+    pinned: BTreeMap<usize, Network>,
     local_networks: Vec<IpNet>,
     exit_choice: ExitNodeChoice,
     lighthouse_addresses: Vec<IpAddr>,
@@ -88,7 +96,7 @@ impl Agent {
         events: mpsc::Sender<(u64, SessionEvent)>,
         ice_events: mpsc::Sender<(u64, IceEvent)>,
     ) -> Result<Self, ConfigError> {
-        let auth_key = config.read_auth_key()?;
+        let keys = config.read_auth_keys()?;
         let key = if let Some(path) = &config.private_key_file {
             read_key(path)?
         } else {
@@ -98,11 +106,10 @@ impl Agent {
             );
             PrivateKey::generate()
         };
-        let info = watch::channel(node_info(&config)).0;
-        let lighthouses = lighthouses(&config);
+        let lighthouses = lighthouses(&config, keys);
+        let infos = infos(&config, &lighthouses);
         Ok(Self {
             config,
-            auth_key,
             key,
             dataplane,
             engine: None,
@@ -114,7 +121,9 @@ impl Agent {
             events,
             failure: None,
             apply_error: None,
-            info,
+            infos,
+            avoided: BTreeMap::new(),
+            pinned: BTreeMap::new(),
             local_networks: Vec::new(),
             exit_choice: ExitNodeChoice::Config,
             lighthouse_addresses: Vec::new(),
@@ -133,6 +142,9 @@ impl Agent {
             lighthouse.netmap = None;
             lighthouse.state = LighthouseState::Connecting;
         }
+
+        self.avoided.clear();
+        self.pinned.clear();
 
         if let Some(mut engine) = self.engine.take() {
             engine.teardown().await;
@@ -215,6 +227,22 @@ impl Agent {
                     tracing::error!(lighthouse = %url, %error, "ignoring an invalid netmap");
                     lighthouse.state =
                         LighthouseState::Unreachable(format!("sent an invalid netmap: {error}"));
+                    return;
+                }
+
+                let pinned = self
+                    .pinned
+                    .entry(lighthouse.mesh)
+                    .or_insert_with(|| netmap.network.clone());
+
+                if *pinned != netmap.network {
+                    tracing::error!(
+                        lighthouse = %url,
+                        "ignoring a netmap for a different network than the rest of this mesh"
+                    );
+                    lighthouse.state = LighthouseState::Unreachable(
+                        "serves a different network than the rest of this mesh".to_owned(),
+                    );
                     return;
                 }
 
@@ -345,22 +373,25 @@ impl Agent {
     }
 
     pub async fn reload(&mut self, config: ClientConfig) -> Result<(), ConfigError> {
-        let auth_key = config.read_auth_key()?;
+        let keys = config.read_auth_keys()?;
         let key = match &config.private_key_file {
             Some(path) => read_key(path)?,
             None => self.key.clone(),
         };
 
         let lighthouses_changed = config.lighthouses != self.config.lighthouses;
+        let auth_keys_changed = self
+            .lighthouses
+            .iter()
+            .map(|lighthouse| &lighthouse.auth_key)
+            .ne(keys.iter());
         let key_changed = key != self.key;
         let rebuild = lighthouses_changed
+            || auth_keys_changed
             || key_changed
             || config.interface != self.config.interface
             || config.dns.accept != self.config.dns.accept;
-        let restart = rebuild
-            || config.ca_file != self.config.ca_file
-            || auth_key != self.auth_key
-            || self.failure.is_some();
+        let restart = rebuild || config.ca_file != self.config.ca_file || self.failure.is_some();
 
         if key_changed {
             self.logout().await;
@@ -369,15 +400,16 @@ impl Agent {
         }
 
         self.config = config;
-        self.auth_key = auth_key;
         self.key = key;
         self.exit_choice = ExitNodeChoice::Config;
-        self.publish_info();
 
         if rebuild {
             self.shutdown().await;
-            self.lighthouses = lighthouses(&self.config);
+            self.lighthouses = lighthouses(&self.config, keys);
+            self.infos = infos(&self.config, &self.lighthouses);
         }
+
+        self.publish_info();
 
         if restart {
             self.connect().await;
@@ -388,21 +420,31 @@ impl Agent {
     }
 
     fn view(&self) -> Option<View> {
-        let primary = self
-            .lighthouses
-            .iter()
-            .filter(|lighthouse| lighthouse.connected())
-            .find_map(LighthouseConnection::usable_netmap)
-            .or_else(|| {
-                self.lighthouses
-                    .iter()
+        let netmaps: Vec<(usize, NetMap)> = (0..self.infos.len())
+            .filter_map(|mesh| {
+                let serving = || {
+                    self.lighthouses
+                        .iter()
+                        .filter(move |lighthouse| lighthouse.mesh == mesh)
+                };
+                serving()
+                    .filter(|lighthouse| lighthouse.connected())
                     .find_map(LighthouseConnection::usable_netmap)
-            })?;
+                    .or_else(|| serving().find_map(LighthouseConnection::usable_netmap))
+                    .map(|netmap| (mesh, netmap.clone()))
+            })
+            .collect();
+
+        if netmaps.is_empty() {
+            return None;
+        }
+
         let mut view = View {
-            netmap: primary.clone(),
+            meshes: meshes::resolve(netmaps, &self.avoided),
             hubs: BTreeMap::new(),
             attached: BTreeMap::new(),
             connected: BTreeSet::new(),
+            serves: BTreeMap::new(),
         };
 
         for (index, lighthouse) in self.lighthouses.iter().enumerate() {
@@ -411,6 +453,7 @@ impl Agent {
             };
 
             view.hubs.insert(index, netmap.hub.clone());
+            view.serves.insert(index, lighthouse.mesh);
 
             if !lighthouse.connected() {
                 continue;
@@ -430,6 +473,17 @@ impl Agent {
         let Some(view) = self.view() else {
             return;
         };
+
+        let avoided: BTreeMap<usize, Vec<IpAddr>> = view
+            .meshes
+            .iter()
+            .map(|mesh| (mesh.index, mesh.avoid.clone()))
+            .collect();
+
+        if avoided != self.avoided {
+            self.avoided = avoided;
+            self.publish_info();
+        }
 
         let Some(engine) = &mut self.engine else {
             return;
@@ -476,23 +530,39 @@ impl Agent {
     }
 
     pub fn records(&self) -> Vec<RecordEntry> {
-        let view = self.view();
-        let statuses = view.as_ref().map(|view| &view.netmap.node.records);
-        self.config
-            .dns
-            .records
+        let records = &self.config.dns.records;
+
+        let Some(view) = self.view() else {
+            return records
+                .iter()
+                .map(|record| RecordEntry {
+                    record: record.clone(),
+                    mesh: None,
+                    state: None,
+                })
+                .collect();
+        };
+
+        view.meshes
             .iter()
-            .map(|record| RecordEntry {
-                record: record.clone(),
-                state: statuses
-                    .and_then(|statuses| statuses.iter().find(|status| status.record == *record))
-                    .map(|status| status.state),
+            .flat_map(|mesh| {
+                records.iter().map(|record| RecordEntry {
+                    record: record.clone(),
+                    mesh: Some(mesh.netmap.network.domain.clone()),
+                    state: mesh
+                        .netmap
+                        .node
+                        .records
+                        .iter()
+                        .find(|status| status.record == *record)
+                        .map(|status| status.state),
+                })
             })
             .collect()
     }
 
     pub fn status(&self) -> StatusReport {
-        let view = self.view();
+        let meshes = self.view().map(|view| view.meshes).unwrap_or_default();
         let relayed = self
             .engine
             .as_ref()
@@ -506,21 +576,29 @@ impl Agent {
                 .enumerate()
                 .map(|(index, lighthouse)| LighthouseStatus {
                     url: lighthouse.url.clone(),
+                    mesh: meshes
+                        .iter()
+                        .find(|mesh| mesh.index == lighthouse.mesh)
+                        .map(|mesh| mesh.netmap.network.domain.clone()),
                     state: lighthouse.state.clone(),
                     relay: relayed.contains(&index),
                 })
                 .collect(),
             key: self.key.public_key(),
-            node: view.as_ref().map(|view| {
-                let node = &view.netmap.node;
-                NodeStatus {
-                    id: node.id,
-                    hostname: node.hostname.clone(),
-                    fqdn: format!("{}.{}", node.hostname, view.netmap.network.domain),
-                    addresses: node.addresses,
-                    observed_endpoints: self.reflexive.clone(),
-                }
-            }),
+            observed_endpoints: self.reflexive.clone(),
+            nodes: meshes
+                .iter()
+                .map(|mesh| {
+                    let node = &mesh.netmap.node;
+                    NodeStatus {
+                        id: node.id,
+                        hostname: node.hostname.clone(),
+                        fqdn: format!("{}.{}", node.hostname, mesh.netmap.network.domain),
+                        addresses: mesh.addresses.clone(),
+                        taken: mesh.taken(),
+                    }
+                })
+                .collect(),
             exit_node: self.exit_node().map(|exit_node| ExitNodeStatus {
                 active: self.engine.as_ref().is_some_and(Engine::exit_node_active),
                 peer: exit_node.peer,
@@ -534,7 +612,9 @@ impl Agent {
         self.failure = None;
         let mut clients = Vec::new();
 
-        for url in &self.config.lighthouses {
+        for entry in &self.config.lighthouses {
+            let url = &entry.url;
+
             match ApiClient::new(url.clone(), self.config.ca_file.as_deref()) {
                 Ok(client) => clients.push(client),
                 Err(error) => {
@@ -552,7 +632,12 @@ impl Agent {
                 interface: &self.config.interface,
                 key: &self.key,
                 accept_dns: self.config.dns.accept,
-                lighthouses: self.config.lighthouses.clone(),
+                lighthouses: self
+                    .config
+                    .lighthouses
+                    .iter()
+                    .map(|entry| entry.url.clone())
+                    .collect(),
                 local_networks: self.local_networks.clone(),
                 ice_events: self.ice_events.clone(),
                 generation: self.engines_started,
@@ -581,13 +666,13 @@ impl Agent {
             let (signals, outgoing) = mpsc::channel(SIGNAL_QUEUE);
             let session = Session {
                 client: client.clone(),
-                auth_key: self.auth_key.clone(),
+                auth_key: lighthouse.auth_key.clone(),
                 key: self.key.clone(),
                 relay: Arc::clone(&relay),
                 lighthouse: index,
             };
-            let task =
-                tokio::spawn(session.run(id, self.info.subscribe(), outgoing, self.events.clone()));
+            let info = self.infos[lighthouse.mesh].subscribe();
+            let task = tokio::spawn(session.run(id, info, outgoing, self.events.clone()));
 
             lighthouse.api = Some(client);
             lighthouse.session = Some(RunningSession { id, task, signals });
@@ -598,7 +683,8 @@ impl Agent {
     async fn resolve_lighthouse_addresses(&mut self) {
         let mut addresses = Vec::new();
 
-        for lighthouse in &self.config.lighthouses {
+        for entry in &self.config.lighthouses {
+            let lighthouse = &entry.url;
             let port = lighthouse.port_or_known_default().unwrap_or(443);
 
             match lighthouse.host() {
@@ -634,25 +720,53 @@ impl Agent {
     }
 
     fn publish_info(&self) {
-        let info = node_info(&self.config);
-        self.info.send_if_modified(|current| {
-            let changed = *current != info;
-            *current = info;
-            changed
-        });
+        for (mesh, sender) in self.infos.iter().enumerate() {
+            let avoid = self.avoided.get(&mesh).cloned().unwrap_or_default();
+            let info = node_info(&self.config, avoid);
+            sender.send_if_modified(|current| {
+                let changed = *current != info;
+                *current = info;
+                changed
+            });
+        }
     }
 }
 
-fn lighthouses(config: &ClientConfig) -> Vec<LighthouseConnection> {
+fn lighthouses(config: &ClientConfig, keys: Vec<AuthKey>) -> Vec<LighthouseConnection> {
+    let mut meshes: Vec<SecretHash> = Vec::new();
     config
         .lighthouses
         .iter()
-        .cloned()
-        .map(LighthouseConnection::new)
+        .zip(keys)
+        .map(|(entry, auth_key)| {
+            let hash = auth_key.hash();
+            let mesh = meshes
+                .iter()
+                .position(|known| *known == hash)
+                .unwrap_or_else(|| {
+                    meshes.push(hash);
+                    meshes.len() - 1
+                });
+            LighthouseConnection::new(entry.url.clone(), mesh, auth_key)
+        })
         .collect()
 }
 
-fn node_info(config: &ClientConfig) -> NodeInfo {
+fn infos(
+    config: &ClientConfig,
+    lighthouses: &[LighthouseConnection],
+) -> Vec<watch::Sender<NodeInfo>> {
+    let count = lighthouses
+        .iter()
+        .map(|lighthouse| lighthouse.mesh + 1)
+        .max()
+        .unwrap_or_default();
+    iter::repeat_with(|| watch::channel(node_info(config, Vec::new())).0)
+        .take(count)
+        .collect()
+}
+
+fn node_info(config: &ClientConfig, avoid: Vec<IpAddr>) -> NodeInfo {
     let hostname = config
         .hostname
         .clone()
@@ -665,5 +779,6 @@ fn node_info(config: &ClientConfig) -> NodeInfo {
         hostname,
         records: config.dns.records.clone(),
         advertise_exit_node: config.exit_node.advertise,
+        avoid,
     }
 }

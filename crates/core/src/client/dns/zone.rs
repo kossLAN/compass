@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 
-use bunnyhop_proto::{Addresses, CnameTarget, DnsName, DnsRecord, NetMap, RecordData, RecordState};
+use bunnyhop_proto::{CnameTarget, DnsName, DnsRecord, RecordData, RecordState};
 use hickory_server::proto::rr::rdata::{A, AAAA, CNAME, PTR};
 use hickory_server::proto::rr::{LowerName, Name, RData, Record, RecordType};
+
+use crate::client::meshes::Mesh;
 
 const TTL: u32 = 60;
 const MAX_CNAME_CHAIN: usize = 8;
@@ -29,81 +31,49 @@ fn in_domain(name: &DnsName, domain: &DnsName) -> Option<Name> {
     absolute(&name.join(domain).ok()?)
 }
 
+struct Builder {
+    zone: Zone,
+    owners: BTreeMap<LowerName, usize>,
+}
+
 impl Zone {
-    pub fn from_netmap(netmap: &NetMap, domains: &[DnsName]) -> Self {
-        let domain = &netmap.network.domain;
-        let mut zone = Self {
-            origins: domains
-                .iter()
-                .filter_map(absolute)
-                .map(Into::into)
-                .collect(),
-            records: BTreeMap::new(),
-        };
-
-        zone.add_host(&netmap.node.hostname, netmap.node.addresses, domain);
-
-        for status in &netmap.node.records {
-            if status.state == RecordState::Accepted {
-                zone.add_record(&status.record, domain);
-            }
-        }
-
-        for peer in &netmap.peers {
-            zone.add_host(&peer.hostname, peer.addresses, domain);
-
-            for record in &peer.records {
-                zone.add_record(record, domain);
-            }
-        }
-
-        zone
-    }
-
-    fn add_host(&mut self, hostname: &DnsName, addresses: Addresses, domain: &DnsName) {
-        let Some(name) = in_domain(hostname, domain) else {
-            return;
-        };
-
-        for address in addresses.iter() {
-            let data = match address {
-                IpAddr::V4(v4) => RData::A(A(v4)),
-                IpAddr::V6(v6) => RData::AAAA(AAAA(v6)),
-            };
-
-            self.insert(name.clone(), data);
-            self.insert(Name::from(address), RData::PTR(PTR(name.clone())));
-        }
-    }
-
-    fn add_record(&mut self, record: &DnsRecord, domain: &DnsName) {
-        let Some(name) = in_domain(&record.name, domain) else {
-            return;
-        };
-
-        let data = match &record.data {
-            RecordData::A(v4) => RData::A(A(*v4)),
-            RecordData::Aaaa(v6) => RData::AAAA(AAAA(*v6)),
-            RecordData::Cname(target) => {
-                let target = match target {
-                    CnameTarget::Mesh(target) => in_domain(target, domain),
-                    CnameTarget::External(target) => absolute(target),
-                };
-
-                let Some(target) = target else {
-                    return;
-                };
-
-                RData::CNAME(CNAME(target))
+    pub fn from_meshes(meshes: &[Mesh], domains: &[DnsName]) -> Self {
+        let mut builder = Builder {
+            zone: Self {
+                origins: domains
+                    .iter()
+                    .filter_map(absolute)
+                    .map(Into::into)
+                    .collect(),
+                records: BTreeMap::new(),
             },
+            owners: BTreeMap::new(),
         };
 
-        self.insert(name, data);
-    }
+        for mesh in meshes {
+            let domain = &mesh.netmap.network.domain;
+            let node = &mesh.netmap.node;
+            let taken = mesh.taken();
+            builder.add_host(mesh.index, &node.hostname, &mesh.addresses, domain);
 
-    fn insert(&mut self, name: Name, data: RData) {
-        let record = Record::from_rdata(name.clone(), TTL, data);
-        self.records.entry(name.into()).or_default().push(record);
+            for status in &node.records {
+                if status.state == RecordState::Accepted {
+                    builder.add_record(mesh.index, &status.record, domain, &taken);
+                }
+            }
+
+            for peer in &mesh.netmap.peers {
+                let taken = mesh.peer_taken(peer);
+                let addresses = mesh.peer_addresses(&peer.key);
+                builder.add_host(mesh.index, &peer.hostname, addresses, domain);
+
+                for record in &peer.records {
+                    builder.add_record(mesh.index, record, domain, &taken);
+                }
+            }
+        }
+
+        builder.zone
     }
 
     pub fn lookup(&self, name: &LowerName, kind: RecordType) -> Answer {
@@ -145,5 +115,67 @@ impl Zone {
         }
 
         Answer::Found(answers)
+    }
+}
+
+impl Builder {
+    fn add_host(
+        &mut self,
+        mesh: usize,
+        hostname: &DnsName,
+        addresses: &[IpAddr],
+        domain: &DnsName,
+    ) {
+        let Some(name) = in_domain(hostname, domain) else {
+            return;
+        };
+
+        for address in addresses {
+            let data = match address {
+                IpAddr::V4(v4) => RData::A(A(*v4)),
+                IpAddr::V6(v6) => RData::AAAA(AAAA(*v6)),
+            };
+
+            self.insert(mesh, name.clone(), data);
+            self.insert(mesh, Name::from(*address), RData::PTR(PTR(name.clone())));
+        }
+    }
+
+    fn add_record(&mut self, mesh: usize, record: &DnsRecord, domain: &DnsName, taken: &[IpAddr]) {
+        let Some(name) = in_domain(&record.name, domain) else {
+            return;
+        };
+
+        let data = match &record.data {
+            RecordData::A(v4) if taken.contains(&IpAddr::V4(*v4)) => return,
+            RecordData::Aaaa(v6) if taken.contains(&IpAddr::V6(*v6)) => return,
+            RecordData::A(v4) => RData::A(A(*v4)),
+            RecordData::Aaaa(v6) => RData::AAAA(AAAA(*v6)),
+            RecordData::Cname(target) => {
+                let target = match target {
+                    CnameTarget::Mesh(target) => in_domain(target, domain),
+                    CnameTarget::External(target) => absolute(target),
+                };
+
+                let Some(target) = target else {
+                    return;
+                };
+
+                RData::CNAME(CNAME(target))
+            },
+        };
+
+        self.insert(mesh, name, data);
+    }
+
+    fn insert(&mut self, mesh: usize, name: Name, data: RData) {
+        let lower: LowerName = name.clone().into();
+
+        if *self.owners.entry(lower.clone()).or_insert(mesh) != mesh {
+            return;
+        }
+
+        let record = Record::from_rdata(name, TTL, data);
+        self.zone.records.entry(lower).or_default().push(record);
     }
 }

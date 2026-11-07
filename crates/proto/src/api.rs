@@ -1,4 +1,5 @@
 use std::fmt;
+use std::net::IpAddr;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -11,11 +12,15 @@ pub const LONG_POLL: Duration = Duration::from_secs(50);
 
 pub const MAX_RECORDS: usize = 64;
 
+pub const MAX_AVOID: usize = 64;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub hostname: DnsName,
     pub records: Vec<DnsRecord>,
     pub advertise_exit_node: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub avoid: Vec<IpAddr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

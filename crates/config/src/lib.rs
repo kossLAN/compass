@@ -9,7 +9,9 @@ mod secret;
 use std::fs;
 use std::path::Path;
 
-pub use client::{ClientConfig, DnsConfig, ExitNodeConfig, InterfaceConfig, MAX_LIGHTHOUSES};
+pub use client::{
+    ClientConfig, DnsConfig, ExitNodeConfig, InterfaceConfig, LighthouseEntry, MAX_LIGHTHOUSES,
+};
 pub use daemon::{DEFAULT_SOCKET, DaemonConfig, SocketConfig};
 pub use error::ConfigError;
 pub use lighthouse::{

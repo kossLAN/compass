@@ -1,14 +1,13 @@
 mod stub;
 mod zone;
 
-use std::iter;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use bunnyhop_net::{Dataplane, LinkDns};
-use bunnyhop_proto::{DNS_PORT, DnsName, NetMap, Network};
+use bunnyhop_proto::{DNS_PORT, DnsName};
 use hickory_server::proto::rr::Name;
 use ipnet::IpNet;
 use tokio::net::{TcpListener, UdpSocket};
@@ -16,19 +15,42 @@ use tokio_util::sync::CancellationToken;
 
 use self::stub::Stub;
 use self::zone::Zone;
+use crate::client::meshes::Mesh;
 
 const TCP_TIMEOUT: Duration = Duration::from_secs(5);
 const TCP_RESPONSE_BUFFER: usize = 32;
 const ARPA_LABELS: usize = 2;
 
-pub fn stub_address(netmap: &NetMap) -> Option<IpAddr> {
-    netmap.node.addresses.iter().next()
+pub fn stub_address(meshes: &[Mesh]) -> Option<IpAddr> {
+    meshes.first()?.addresses.first().copied()
 }
 
-fn domains(network: &Network) -> Vec<DnsName> {
-    iter::once(network.domain.clone())
-        .chain(network.prefixes().into_iter().flat_map(reverse_zones))
-        .collect()
+fn search(meshes: &[Mesh]) -> Vec<DnsName> {
+    let mut domains: Vec<DnsName> = Vec::new();
+
+    for mesh in meshes {
+        if !domains.contains(&mesh.netmap.network.domain) {
+            domains.push(mesh.netmap.network.domain.clone());
+        }
+    }
+
+    domains
+}
+
+fn domains(meshes: &[Mesh]) -> Vec<DnsName> {
+    let mut domains = search(meshes);
+
+    for zone in meshes
+        .iter()
+        .flat_map(|mesh| mesh.netmap.network.prefixes())
+        .flat_map(reverse_zones)
+    {
+        if !domains.contains(&zone) {
+            domains.push(zone);
+        }
+    }
+
+    domains
 }
 
 fn reverse_zones(prefix: IpNet) -> Vec<DnsName> {
@@ -60,12 +82,12 @@ pub struct DnsService {
 }
 
 impl DnsService {
-    pub async fn update(&mut self, dataplane: &Dataplane, device: &str, netmap: &NetMap) {
-        let domains = domains(&netmap.network);
+    pub async fn update(&mut self, dataplane: &Dataplane, device: &str, meshes: &[Mesh]) {
+        let domains = domains(meshes);
         self.zone
-            .store(Arc::new(Zone::from_netmap(netmap, &domains)));
+            .store(Arc::new(Zone::from_meshes(meshes, &domains)));
 
-        let Some(address) = stub_address(netmap) else {
+        let Some(address) = stub_address(meshes) else {
             return;
         };
 
@@ -80,7 +102,7 @@ impl DnsService {
 
         let dns = LinkDns {
             servers: vec![address],
-            search: vec![netmap.network.domain.to_string()],
+            search: search(meshes).iter().map(ToString::to_string).collect(),
         };
 
         if self.registered.as_ref() == Some(&dns) {

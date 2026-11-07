@@ -4,6 +4,7 @@ use std::sync::Arc;
 use bunnyhop_config::InterfaceConfig;
 use bunnyhop_net::{Dataplane, DeviceSpec, PeerOp, PeerSpec, RouteSpec, StunSocket, plan_peers};
 use bunnyhop_proto::{PrivateKey, PublicKey};
+use ipnet::IpNet;
 
 use super::{
     Backend, Counters, DataplaneError, EXIT_TABLE, FWMARK, KEEPALIVE, MAIN_TABLE, Path, Plan,
@@ -38,7 +39,7 @@ impl Kernel {
             private_key: self.key.clone(),
             listen_port: Some(self.interface.listen_port),
             mtu: plan.mtu,
-            addresses: plan.addresses.host_nets(),
+            addresses: plan.addresses(),
             fwmark: FWMARK,
         }
     }
@@ -53,7 +54,8 @@ impl Kernel {
             .peers
             .iter()
             .map(|peer| {
-                let mut allowed_ips = peer.addresses.host_nets();
+                let mut allowed_ips: Vec<IpNet> =
+                    peer.addresses.iter().copied().map(IpNet::from).collect();
 
                 if exit_peer == Some(peer.key) {
                     allowed_ips.extend(default_routes());
@@ -92,29 +94,55 @@ impl Kernel {
     }
 
     fn routes(&self, plan: &Plan) -> BTreeSet<RouteSpec> {
-        let route = |destination, table| RouteSpec {
-            source: Some(plan.source(&destination)),
+        let route = |destination, source, table| RouteSpec {
+            source,
             destination,
             device: self.interface.name.clone(),
             table,
         };
 
-        let mut routes: BTreeSet<RouteSpec> = plan
-            .prefixes
-            .iter()
-            .map(|prefix| route(*prefix, MAIN_TABLE))
-            .collect();
+        let mut covered: Vec<IpNet> = Vec::new();
+        let mut routes = BTreeSet::new();
 
-        if plan.exit.is_some() {
+        for mesh in &plan.meshes {
+            for prefix in &mesh.prefixes {
+                let Some(source) = mesh.source(prefix) else {
+                    continue;
+                };
+
+                let destinations: Vec<IpNet> = if covered.iter().any(|net| overlaps(net, prefix)) {
+                    mesh.peers
+                        .iter()
+                        .filter(|address| prefix.contains(*address))
+                        .map(|address| IpNet::from(*address))
+                        .collect()
+                } else {
+                    vec![*prefix]
+                };
+
+                for destination in destinations {
+                    if !covered.contains(&destination) {
+                        covered.push(destination);
+                        routes.insert(route(destination, Some(source), MAIN_TABLE));
+                    }
+                }
+            }
+        }
+
+        if let Some(exit) = &plan.exit {
             routes.extend(
                 default_routes()
                     .into_iter()
-                    .map(|net| route(net, EXIT_TABLE)),
+                    .map(|net| route(net, exit.source(&net), EXIT_TABLE)),
             );
         }
 
         routes
     }
+}
+
+fn overlaps(a: &IpNet, b: &IpNet) -> bool {
+    a.contains(&b.network()) || b.contains(&a.network())
 }
 
 #[async_trait::async_trait]

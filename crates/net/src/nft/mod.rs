@@ -19,10 +19,15 @@ fn reset() -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRules {
     pub interface: String,
-    pub mesh: Vec<IpNet>,
+    pub meshes: Vec<MeshRules>,
+    pub local_dns: Option<IpAddr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeshRules {
+    pub prefixes: Vec<IpNet>,
     pub addresses: Vec<IpAddr>,
     pub inbound: Vec<PacketRule>,
-    pub local_dns: Option<IpAddr>,
     pub exit_clients: Vec<IpNet>,
 }
 

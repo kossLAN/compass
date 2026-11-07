@@ -8,7 +8,7 @@ use std::time::{Duration, Instant, SystemTime};
 use bunnyhop_config::InterfaceConfig;
 use bunnyhop_net::{Dataplane, NetError};
 use bunnyhop_proto::{
-    DnsName, HubInfo, NetMap, NodeId, PathKind, PeerStatus, PrivateKey, PublicKey, SignalMessage,
+    DnsName, HubInfo, NodeId, PathKind, Peer, PeerStatus, PrivateKey, PublicKey, SignalMessage,
 };
 use ipnet::IpNet;
 use tokio::sync::mpsc;
@@ -17,6 +17,7 @@ use url::Url;
 use crate::client::dataplane::{self, Backend, DataplaneError, Path, Plan, Stats};
 use crate::client::dns::{self, DnsService};
 use crate::client::ice::{self, IceEvent, IceHandle, IcePeer};
+use crate::client::meshes::Mesh;
 use crate::client::relay::Relay;
 
 const RESOLVE_RETRY: Duration = Duration::from_secs(15);
@@ -25,10 +26,23 @@ const RESYNC: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub struct View {
-    pub netmap: NetMap,
+    pub meshes: Vec<Mesh>,
     pub hubs: BTreeMap<usize, HubInfo>,
     pub attached: BTreeMap<PublicKey, BTreeSet<usize>>,
     pub connected: BTreeSet<usize>,
+    pub serves: BTreeMap<usize, usize>,
+}
+
+impl View {
+    fn peers(&self) -> impl Iterator<Item = (&Mesh, &Peer)> {
+        self.meshes
+            .iter()
+            .flat_map(|mesh| mesh.netmap.peers.iter().map(move |peer| (mesh, peer)))
+    }
+
+    fn lists(&self, key: &PublicKey) -> bool {
+        self.peers().any(|(_, peer)| peer.key == *key)
+    }
 }
 
 pub struct ExitNode {
@@ -148,40 +162,50 @@ impl Engine {
 
         self.hubs
             .retain(|lighthouse, _| view.hubs.contains_key(lighthouse));
-        self.check_exit_serving(&view.netmap).await?;
+        self.check_exit_serving(&view).await?;
 
-        self.direct
-            .retain(|key, _| view.netmap.peers.iter().any(|peer| peer.key == *key));
+        self.direct.retain(|key, _| view.lists(key));
         self.relay
-            .set_peers(&view.netmap.peers.iter().map(|peer| peer.id).collect());
+            .set_peers(&view.peers().map(|(_, peer)| peer.id).collect());
+
+        let mut ice_peers: BTreeMap<PublicKey, IcePeer> = BTreeMap::new();
+
+        for (_, peer) in view.peers() {
+            ice_peers.entry(peer.key).or_insert_with(|| IcePeer {
+                id: peer.id,
+                key: peer.key,
+                online: view.attached.contains_key(&peer.key),
+            });
+        }
+
         self.ice.set_peers(
-            view.netmap
-                .peers
+            ice_peers.into_values().collect(),
+            view.meshes
                 .iter()
-                .map(|peer| IcePeer {
-                    id: peer.id,
-                    key: peer.key,
-                    online: view.attached.contains_key(&peer.key),
-                })
+                .flat_map(|mesh| mesh.netmap.network.prefixes())
                 .collect(),
-            view.netmap.network.clone(),
         );
 
-        let netmap = view.netmap.clone();
+        let meshes = view.meshes.clone();
         self.view = Some(view);
         self.sync(&[]).await?;
 
         if self.accept_dns {
             self.dns
-                .update(&self.dataplane, self.backend.interface(), &netmap)
+                .update(&self.dataplane, self.backend.interface(), &meshes)
                 .await;
         }
 
         Ok(())
     }
 
-    async fn check_exit_serving(&mut self, netmap: &NetMap) -> Result<(), DataplaneError> {
-        if self.exit_warned || netmap.exit_clients.is_empty() {
+    async fn check_exit_serving(&mut self, view: &View) -> Result<(), DataplaneError> {
+        let serving = view
+            .meshes
+            .iter()
+            .any(|mesh| !mesh.netmap.exit_clients.is_empty());
+
+        if self.exit_warned || !serving {
             return Ok(());
         }
 
@@ -189,9 +213,10 @@ impl Engine {
             ("IPv4", false, "net/ipv4/conf/all/forwarding"),
             ("IPv6", true, "net/ipv6/conf/all/forwarding"),
         ] {
-            if netmap
-                .exit_clients
+            if view
+                .meshes
                 .iter()
+                .flat_map(|mesh| &mesh.netmap.exit_clients)
                 .any(|net| net.addr().is_ipv6() == ipv6)
                 && self.dataplane.sysctl(key).await?.as_deref() != Some("1")
             {
@@ -217,7 +242,7 @@ impl Engine {
             exit_node: self.exit_node.as_ref(),
             local_dns: self
                 .accept_dns
-                .then(|| dns::stub_address(&view.netmap))
+                .then(|| dns::stub_address(&view.meshes))
                 .flatten(),
         }))
     }
@@ -300,10 +325,7 @@ impl Engine {
         key: PublicKey,
         endpoint: Option<SocketAddr>,
     ) -> Result<(), DataplaneError> {
-        let known = self
-            .view
-            .as_ref()
-            .is_some_and(|view| view.netmap.peers.iter().any(|peer| peer.key == key));
+        let known = self.view.as_ref().is_some_and(|view| view.lists(&key));
 
         let previous = match endpoint {
             Some(endpoint) if known => self.direct.insert(key, endpoint),
@@ -340,10 +362,8 @@ impl Engine {
         };
 
         let now = SystemTime::now();
-        view.netmap
-            .peers
-            .iter()
-            .map(|peer| {
+        view.peers()
+            .map(|(mesh, peer)| {
                 let path = plan
                     .peers
                     .iter()
@@ -359,7 +379,9 @@ impl Engine {
                 let counters = self.stats.peers.get(&peer.key);
                 PeerStatus {
                     hostname: peer.hostname.clone(),
-                    addresses: peer.addresses,
+                    fqdn: format!("{}.{}", peer.hostname, mesh.netmap.network.domain),
+                    addresses: mesh.peer_addresses(&peer.key).to_vec(),
+                    taken: mesh.peer_taken(peer),
                     online: view.attached.contains_key(&peer.key),
                     exit_node: peer.exit_node,
                     path,
