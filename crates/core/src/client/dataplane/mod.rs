@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use bunnyhop_config::InterfaceConfig;
-use bunnyhop_net::{Datagram, Dataplane, MeshRules, NetError, NodeRules, RuleSpec, StunSocket};
+use bunnyhop_net::{
+    Datagram, Dataplane, Firewall, MeshRules, NetError, NodeRules, RuleSpec, StunSocket,
+};
 use bunnyhop_proto::{NodeId, PacketRule, PrivateKey, PublicKey};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 
@@ -219,13 +221,14 @@ pub async fn start(
         return Err(DataplaneError::Unsupported("WireGuard"));
     }
 
-    if !dataplane.nftables_available().await {
-        return Err(DataplaneError::Unsupported("nftables"));
-    }
+    let firewall = Firewall::detect().await?;
+    tracing::info!(%firewall, "using firewall");
 
     let stun = StunSocket::bind(interface.listen_port, FWMARK)
         .inspect_err(|error| tracing::warn!(%error, "cannot open a raw socket for STUN"))
         .ok();
 
-    Ok(Box::new(Kernel::new(dataplane, interface, key, stun)))
+    Ok(Box::new(Kernel::new(
+        dataplane, firewall, interface, key, stun,
+    )))
 }

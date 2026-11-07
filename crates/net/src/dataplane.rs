@@ -5,8 +5,8 @@ use ipnet::IpNet;
 use crate::link::Links;
 use crate::wg::Wireguard;
 use crate::{
-    DeviceSpec, DeviceState, LinkDns, LocalAddress, NetError, NodeRules, PeerOp, RouteSpec,
-    RuleSpec, nft, resolvconf, route, rule, sysctl,
+    DeviceSpec, DeviceState, LinkDns, LocalAddress, NetError, PeerOp, RouteSpec, RuleSpec,
+    resolvconf, route, rule, sysctl,
 };
 
 pub struct Dataplane {
@@ -92,20 +92,8 @@ impl Dataplane {
         rule::sync(&self.links, &BTreeSet::new()).await
     }
 
-    pub async fn apply_firewall(&self, rules: &NodeRules) -> Result<(), NetError> {
-        nft::apply(rules).await
-    }
-
-    pub async fn remove_firewall(&self) -> Result<(), NetError> {
-        nft::remove().await
-    }
-
     pub async fn wireguard_available(&self) -> bool {
         self.wireguard.available().await
-    }
-
-    pub async fn nftables_available(&self) -> bool {
-        nft::available().await
     }
 
     pub async fn configure_link(

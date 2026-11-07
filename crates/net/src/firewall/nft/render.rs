@@ -5,39 +5,11 @@ use std::net::IpAddr;
 use bunnyhop_proto::{DNS_PORT, PacketRule, PortRange, Proto};
 use ipnet::IpNet;
 
-use super::{NodeRules, reset};
+use super::reset;
 use crate::TABLE;
-
-#[derive(Clone, Copy)]
-enum Family {
-    V4,
-    V6,
-}
+use crate::firewall::{Family, NodeRules};
 
 impl Family {
-    const ALL: [Self; 2] = [Self::V4, Self::V6];
-
-    const fn of(address: IpAddr) -> Self {
-        match address {
-            IpAddr::V4(_) => Self::V4,
-            IpAddr::V6(_) => Self::V6,
-        }
-    }
-
-    const fn matches(self, net: &IpNet) -> bool {
-        matches!(
-            (self, net),
-            (Self::V4, IpNet::V4(_)) | (Self::V6, IpNet::V6(_))
-        )
-    }
-
-    const fn holds(self, address: IpAddr) -> bool {
-        matches!(
-            (self, address),
-            (Self::V4, IpAddr::V4(_)) | (Self::V6, IpAddr::V6(_))
-        )
-    }
-
     const fn suffix(self) -> &'static str {
         match self {
             Self::V4 => "v4",
@@ -56,13 +28,6 @@ impl Family {
         match self {
             Self::V4 => "ip",
             Self::V6 => "ip6",
-        }
-    }
-
-    const fn icmp(self) -> &'static str {
-        match self {
-            Self::V4 => "icmp",
-            Self::V6 => "ipv6-icmp",
         }
     }
 }

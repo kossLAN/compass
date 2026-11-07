@@ -1,7 +1,7 @@
 mod dataplane;
+mod firewall;
 mod link;
 mod model;
-mod nft;
 mod plan;
 mod resolvconf;
 mod route;
@@ -13,11 +13,11 @@ mod wg;
 use std::io;
 
 pub use dataplane::Dataplane;
+pub use firewall::{Firewall, MeshRules, NodeRules};
 pub use model::{
     DeviceSpec, DeviceState, LinkDns, LocalAddress, PeerOp, PeerSpec, PeerState, RouteSpec,
     RuleSpec,
 };
-pub use nft::{MeshRules, NodeRules};
 pub use plan::plan_peers;
 pub use stun_socket::{Datagram, StunSocket, is_stun};
 
@@ -39,10 +39,18 @@ pub enum NetError {
     Protocol(String),
     #[error("interface {0} does not exist")]
     MissingDevice(String),
-    #[error("failed to run nft: {0}")]
-    NftSpawn(io::Error),
-    #[error("nft rejected the ruleset: {0}")]
-    Nft(String),
+    #[error("failed to run {program}: {error}")]
+    FirewallSpawn {
+        program: &'static str,
+        error: io::Error,
+    },
+    #[error("{program} failed: {message}")]
+    Firewall {
+        program: &'static str,
+        message: String,
+    },
+    #[error("no usable firewall: {nft}, and {iptables}")]
+    NoFirewall { nft: Box<Self>, iptables: Box<Self> },
     #[error("failed to run resolvconf: {0}")]
     ResolvconfSpawn(io::Error),
     #[error("resolvconf failed: {0}")]

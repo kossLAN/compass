@@ -14,6 +14,7 @@ pkgs.mkShell {
   packages = with pkgs; [
     dig
     iproute2
+    iptables
     nftables
     wireguard-tools
   ];

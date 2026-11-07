@@ -2,7 +2,9 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use bunnyhop_config::InterfaceConfig;
-use bunnyhop_net::{Dataplane, DeviceSpec, PeerOp, PeerSpec, RouteSpec, StunSocket, plan_peers};
+use bunnyhop_net::{
+    Dataplane, DeviceSpec, Firewall, PeerOp, PeerSpec, RouteSpec, StunSocket, plan_peers,
+};
 use bunnyhop_proto::{PrivateKey, PublicKey};
 use ipnet::IpNet;
 
@@ -13,6 +15,7 @@ use super::{
 
 pub struct Kernel {
     dataplane: Arc<Dataplane>,
+    firewall: Firewall,
     interface: InterfaceConfig,
     key: PrivateKey,
     stun: Option<Arc<dyn Stun>>,
@@ -21,12 +24,14 @@ pub struct Kernel {
 impl Kernel {
     pub fn new(
         dataplane: Arc<Dataplane>,
+        firewall: Firewall,
         interface: &InterfaceConfig,
         key: &PrivateKey,
         stun: Option<StunSocket>,
     ) -> Self {
         Self {
             dataplane,
+            firewall,
             interface: interface.clone(),
             key: key.clone(),
             stun: stun.map(|stun| Arc::new(stun) as Arc<dyn Stun>),
@@ -152,8 +157,8 @@ impl Backend for Kernel {
         plan: &Plan,
         rehandshake: &[PublicKey],
     ) -> Result<(), DataplaneError> {
-        self.dataplane
-            .apply_firewall(&plan.firewall(self.interface.name.clone()))
+        self.firewall
+            .apply(&plan.firewall(self.interface.name.clone()))
             .await?;
         self.dataplane.ensure_device(&self.device(plan)).await?;
         self.sync_peers(plan, rehandshake).await?;
@@ -187,7 +192,7 @@ impl Backend for Kernel {
         }
 
         if deleted.is_ok()
-            && let Err(error) = self.dataplane.remove_firewall().await
+            && let Err(error) = self.firewall.remove().await
         {
             tracing::warn!(%error, "failed to remove firewall rules");
         }
