@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, de};
 
-use crate::AclError;
+use crate::acl::AclError;
 
 const TAG_PREFIX: &str = "tag:";
 const GROUP_PREFIX: &str = "group:";

@@ -288,20 +288,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "bunnyhop-acl"
-version = "0.1.0"
-dependencies = [
- "bunnyhop-proto",
- "ipnet",
- "serde",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "bunnyhop-config"
 version = "0.1.0"
 dependencies = [
- "bunnyhop-acl",
  "bunnyhop-proto",
  "ipnet",
  "jiff",
@@ -321,7 +310,6 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-server",
- "bunnyhop-acl",
  "bunnyhop-config",
  "bunnyhop-net",
  "bunnyhop-proto",

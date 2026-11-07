@@ -1,7 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use bunnyhop_acl::AclError;
+use crate::acl::AclError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {

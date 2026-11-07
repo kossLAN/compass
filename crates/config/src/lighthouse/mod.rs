@@ -8,12 +8,12 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
-use bunnyhop_acl::{Policy, Selector, Tag};
 use bunnyhop_proto::{DnsName, MAX_LABEL_LEN, MAX_NAME_LEN, Network, PublicKey, SecretHash};
 use jiff::{Span, SpanRelativeTo};
 
 use self::raw::{RawApi, RawHub, RawKey, RawNetwork, RawNodes};
 use crate::ConfigError;
+use crate::acl::{Policy, Selector, Tag};
 use crate::secret::read_secret;
 
 const MIN_SECRET_LEN: usize = 32;

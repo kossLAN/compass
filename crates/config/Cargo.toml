@@ -9,7 +9,6 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-bunnyhop-acl.workspace = true
 bunnyhop-proto.workspace = true
 
 ipnet.workspace = true

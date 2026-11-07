@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bunnyhop_proto::{Addresses, NodeId, PacketRule};
 use ipnet::IpNet;
 
-use crate::{Policy, Selector, Tag};
+use crate::acl::{Policy, Selector, Tag};
 
 #[derive(Debug, Clone)]
 pub struct Subject<'a> {

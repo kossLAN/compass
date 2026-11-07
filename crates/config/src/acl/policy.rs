@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use bunnyhop_proto::{PortRange, Proto};
 use serde::Deserialize;
 
-use crate::selector::validate_name;
-use crate::{AclError, Selector, Subject, Tag};
+use crate::acl::selector::validate_name;
+use crate::acl::{AclError, Selector, Subject, Tag};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
