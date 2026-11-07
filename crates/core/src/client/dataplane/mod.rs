@@ -1,19 +1,18 @@
-mod kernel;
+mod linux;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use bunnyhop_config::InterfaceConfig;
 use bunnyhop_net::{
-    Datagram, Dataplane, Firewall, MeshRules, NetError, NodeRules, RuleSpec, StunSocket,
+    Dataplane, DeviceSpec, Firewall, MeshRules, NetError, NodeRules, RuleSpec, Stun, Wireguard,
 };
 use bunnyhop_proto::{NodeId, PacketRule, PrivateKey, PublicKey};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 
-use self::kernel::Kernel;
+use self::linux::Linux;
 
 pub const FWMARK: u32 = 0x5254;
 pub const KEEPALIVE: u16 = 25;
@@ -28,8 +27,6 @@ const EXIT_PRIORITY: u32 = 5252;
 pub enum DataplaneError {
     #[error(transparent)]
     Net(#[from] NetError),
-    #[error("the kernel lacks {0}, which the dataplane needs")]
-    Unsupported(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,24 +189,7 @@ pub trait Backend: Send + Sync {
 
     fn interface(&self) -> &str;
 
-    fn stun(&self) -> Option<Arc<dyn Stun>>;
-}
-
-#[async_trait::async_trait]
-pub trait Stun: Send + Sync {
-    async fn send(&self, remote: SocketAddr, payload: &[u8]) -> io::Result<()>;
-    async fn recv(&self) -> io::Result<Datagram>;
-}
-
-#[async_trait::async_trait]
-impl Stun for StunSocket {
-    async fn send(&self, remote: SocketAddr, payload: &[u8]) -> io::Result<()> {
-        Self::send(self, remote, payload).await
-    }
-
-    async fn recv(&self) -> io::Result<Datagram> {
-        Self::recv(self).await
-    }
+    fn stun(&self) -> Option<Stun>;
 }
 
 pub async fn start(
@@ -217,18 +197,19 @@ pub async fn start(
     interface: &InterfaceConfig,
     key: &PrivateKey,
 ) -> Result<Box<dyn Backend>, DataplaneError> {
-    if !dataplane.wireguard_available().await {
-        return Err(DataplaneError::Unsupported("WireGuard"));
-    }
-
     let firewall = Firewall::detect().await?;
     tracing::info!(%firewall, "using firewall");
 
-    let stun = StunSocket::bind(interface.listen_port, FWMARK)
-        .inspect_err(|error| tracing::warn!(%error, "cannot open a raw socket for STUN"))
-        .ok();
+    let wireguard = Wireguard::detect(&DeviceSpec {
+        name: interface.name.clone(),
+        private_key: key.clone(),
+        listen_port: interface.listen_port,
+        fwmark: FWMARK,
+    })
+    .await?;
+    tracing::info!(%wireguard, "using WireGuard");
 
-    Ok(Box::new(Kernel::new(
-        dataplane, firewall, interface, key, stun,
+    Ok(Box::new(Linux::new(
+        dataplane, firewall, wireguard, interface,
     )))
 }

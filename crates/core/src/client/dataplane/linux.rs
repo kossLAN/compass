@@ -2,55 +2,39 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use bunnyhop_config::InterfaceConfig;
-use bunnyhop_net::{
-    Dataplane, DeviceSpec, Firewall, PeerOp, PeerSpec, RouteSpec, StunSocket, plan_peers,
-};
-use bunnyhop_proto::{PrivateKey, PublicKey};
+use bunnyhop_net::{Dataplane, Firewall, PeerOp, PeerSpec, RouteSpec, Stun, Wireguard, plan_peers};
+use bunnyhop_proto::PublicKey;
 use ipnet::IpNet;
 
 use super::{
-    Backend, Counters, DataplaneError, EXIT_TABLE, FWMARK, KEEPALIVE, MAIN_TABLE, Path, Plan,
-    Stats, Stun, default_routes,
+    Backend, Counters, DataplaneError, EXIT_TABLE, KEEPALIVE, MAIN_TABLE, Path, Plan, Stats,
+    default_routes,
 };
 
-pub struct Kernel {
+pub struct Linux {
     dataplane: Arc<Dataplane>,
     firewall: Firewall,
+    wireguard: Wireguard,
     interface: InterfaceConfig,
-    key: PrivateKey,
-    stun: Option<Arc<dyn Stun>>,
 }
 
-impl Kernel {
+impl Linux {
     pub fn new(
         dataplane: Arc<Dataplane>,
         firewall: Firewall,
+        wireguard: Wireguard,
         interface: &InterfaceConfig,
-        key: &PrivateKey,
-        stun: Option<StunSocket>,
     ) -> Self {
         Self {
             dataplane,
             firewall,
+            wireguard,
             interface: interface.clone(),
-            key: key.clone(),
-            stun: stun.map(|stun| Arc::new(stun) as Arc<dyn Stun>),
-        }
-    }
-
-    fn device(&self, plan: &Plan) -> DeviceSpec {
-        DeviceSpec {
-            name: self.interface.name.clone(),
-            private_key: self.key.clone(),
-            listen_port: Some(self.interface.listen_port),
-            mtu: plan.mtu,
-            addresses: plan.addresses(),
-            fwmark: FWMARK,
         }
     }
 
     async fn sync_peers(
-        &self,
+        &mut self,
         plan: &Plan,
         rehandshake: &[PublicKey],
     ) -> Result<(), DataplaneError> {
@@ -80,8 +64,7 @@ impl Kernel {
             })
             .collect();
 
-        let device = &self.interface.name;
-        let actual = self.dataplane.device(device).await?;
+        let actual = self.wireguard.state().await?;
         let mut ops: Vec<PeerOp> = plan_peers(&desired, &actual)
             .into_iter()
             .filter(|op| !matches!(op, PeerOp::Upsert(spec) if rehandshake.contains(&spec.key)))
@@ -95,7 +78,7 @@ impl Kernel {
             ops.push(PeerOp::Upsert(spec.clone()));
         }
 
-        Ok(self.dataplane.apply_peers(device, &ops).await?)
+        Ok(self.wireguard.apply(&ops).await?)
     }
 
     fn routes(&self, plan: &Plan) -> BTreeSet<RouteSpec> {
@@ -151,7 +134,7 @@ fn overlaps(a: &IpNet, b: &IpNet) -> bool {
 }
 
 #[async_trait::async_trait]
-impl Backend for Kernel {
+impl Backend for Linux {
     async fn apply(
         &mut self,
         plan: &Plan,
@@ -160,7 +143,7 @@ impl Backend for Kernel {
         self.firewall
             .apply(&plan.firewall(self.interface.name.clone()))
             .await?;
-        self.dataplane.ensure_device(&self.device(plan)).await?;
+        self.wireguard.ensure(plan.mtu, &plan.addresses()).await?;
         self.sync_peers(plan, rehandshake).await?;
         self.dataplane.sync_routes(&self.routes(plan)).await?;
         self.dataplane.sync_rules(&plan.exit_rules()).await?;
@@ -168,7 +151,7 @@ impl Backend for Kernel {
     }
 
     async fn stats(&mut self) -> Result<Stats, DataplaneError> {
-        let device = self.dataplane.device(&self.interface.name).await?;
+        let device = self.wireguard.state().await?;
         let peers = device
             .peers
             .into_iter()
@@ -185,7 +168,7 @@ impl Backend for Kernel {
     }
 
     async fn teardown(&mut self) {
-        let deleted = self.dataplane.delete_device(&self.interface.name).await;
+        let deleted = self.wireguard.delete().await;
 
         if let Err(error) = &deleted {
             tracing::warn!(%error, "failed to delete the mesh interface");
@@ -206,7 +189,7 @@ impl Backend for Kernel {
         &self.interface.name
     }
 
-    fn stun(&self) -> Option<Arc<dyn Stun>> {
-        self.stun.clone()
+    fn stun(&self) -> Option<Stun> {
+        self.wireguard.stun()
     }
 }

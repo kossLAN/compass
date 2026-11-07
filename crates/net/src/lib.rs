@@ -6,9 +6,9 @@ mod plan;
 mod resolvconf;
 mod route;
 mod rule;
-mod stun_socket;
+mod stun;
 mod sysctl;
-mod wg;
+mod wireguard;
 
 use std::io;
 
@@ -19,7 +19,8 @@ pub use model::{
     RuleSpec,
 };
 pub use plan::plan_peers;
-pub use stun_socket::{Datagram, StunSocket, is_stun};
+pub use stun::{Datagram, is_stun};
+pub use wireguard::{Stun, Wireguard};
 
 const PROTOCOL: u8 = 82;
 const TABLE: &str = "bunnyhop";
@@ -57,6 +58,10 @@ pub enum NetError {
     Resolvconf(String),
     #[error("failed to access sysctl {key}: {error}")]
     Sysctl { key: String, error: io::Error },
+    #[error("failed to create the TUN device: {0}")]
+    Tun(io::Error),
+    #[error("failed to bind the WireGuard socket: {0}")]
+    Bind(io::Error),
 }
 
 impl NetError {

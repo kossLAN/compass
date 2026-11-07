@@ -1,5 +1,3 @@
-mod dump;
-
 use bunnyhop_proto::PrivateKey;
 use futures_util::TryStreamExt as _;
 use genetlink::GenetlinkHandle;
@@ -11,15 +9,16 @@ use netlink_packet_wireguard::{
     WireguardCmd, WireguardMessage, WireguardPeer, WireguardPeerAttribute, WireguardPeerFlags,
 };
 
+use super::dump;
 use crate::{DeviceState, ENODEV, NetError, PeerOp, PeerSpec};
 
 const PEERS_PER_MESSAGE: usize = 32;
 
-pub struct Wireguard {
+pub struct Genetlink {
     handle: GenetlinkHandle,
 }
 
-impl Wireguard {
+impl Genetlink {
     pub fn connect() -> Result<Self, NetError> {
         let (connection, handle, _) = genetlink::new_connection().map_err(NetError::Socket)?;
         tokio::spawn(connection);

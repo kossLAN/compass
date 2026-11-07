@@ -5,16 +5,17 @@ use futures_util::TryStreamExt as _;
 use ipnet::IpNet;
 use rtnetlink::packet_route::address::{AddressAttribute, AddressFlags, AddressMessage};
 use rtnetlink::packet_route::link::{InfoKind, LinkAttribute, LinkInfo, LinkMessage};
-use rtnetlink::{Handle, LinkUnspec, LinkWireguard};
+use rtnetlink::{Handle, LinkUnspec};
 
 use crate::{EADDRNOTAVAIL, ENODEV, NetError, ignore_gone};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Link {
     pub index: u32,
-    pub is_wireguard: bool,
+    pub kind: Option<InfoKind>,
 }
 
+#[derive(Clone)]
 pub struct Links {
     handle: Handle,
 }
@@ -41,7 +42,7 @@ impl Links {
         match links.try_next().await {
             Ok(message) => Ok(message.map(|message| Link {
                 index: message.header.index,
-                is_wireguard: is_wireguard(&message),
+                kind: kind(&message),
             })),
             Err(error) => match NetError::rtnetlink(error) {
                 error if error.is_os_error(ENODEV) => Ok(None),
@@ -57,8 +58,7 @@ impl Links {
             .ok_or_else(|| NetError::MissingDevice(name.to_owned()))
     }
 
-    pub async fn create_wireguard(&self, name: &str) -> Result<(), NetError> {
-        let message = LinkWireguard::new(name).build();
+    pub async fn add(&self, message: LinkMessage) -> Result<(), NetError> {
         self.handle
             .link()
             .add(message)
@@ -67,7 +67,7 @@ impl Links {
             .map_err(NetError::rtnetlink)
     }
 
-    pub async fn bring_up(&self, index: u32, mtu: u16) -> Result<(), NetError> {
+    async fn bring_up(&self, index: u32, mtu: u16) -> Result<(), NetError> {
         let message = LinkUnspec::new_with_index(index)
             .mtu(u32::from(mtu))
             .up()
@@ -87,6 +87,23 @@ impl Links {
             .execute()
             .await
             .map_err(NetError::rtnetlink)
+    }
+
+    pub async fn delete_named(&self, name: &str) -> Result<(), NetError> {
+        match self.find(name).await? {
+            Some(link) => self.delete(link.index).await,
+            None => Ok(()),
+        }
+    }
+
+    pub async fn configure(
+        &self,
+        index: u32,
+        mtu: u16,
+        addresses: &[IpNet],
+    ) -> Result<(), NetError> {
+        self.bring_up(index, mtu).await?;
+        self.sync_addresses(index, addresses).await
     }
 
     pub async fn names(&self) -> Result<BTreeMap<u32, String>, NetError> {
@@ -124,7 +141,7 @@ impl Links {
             .collect())
     }
 
-    pub async fn sync_addresses(&self, index: u32, wanted: &[IpNet]) -> Result<(), NetError> {
+    async fn sync_addresses(&self, index: u32, wanted: &[IpNet]) -> Result<(), NetError> {
         let current = self.address_messages(Some(index)).await?;
         let mut present = Vec::new();
 
@@ -181,13 +198,17 @@ impl Links {
     }
 }
 
-fn is_wireguard(message: &LinkMessage) -> bool {
-    message.attributes.iter().any(|attribute| match attribute {
-        LinkAttribute::LinkInfo(infos) => infos
-            .iter()
-            .any(|info| matches!(info, LinkInfo::Kind(InfoKind::Wireguard))),
-        _ => false,
-    })
+fn kind(message: &LinkMessage) -> Option<InfoKind> {
+    message
+        .attributes
+        .iter()
+        .find_map(|attribute| match attribute {
+            LinkAttribute::LinkInfo(infos) => infos.iter().find_map(|info| match info {
+                LinkInfo::Kind(kind) => Some(kind.clone()),
+                _ => None,
+            }),
+            _ => None,
+        })
 }
 
 fn address_of(message: &AddressMessage) -> Option<IpNet> {

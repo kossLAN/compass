@@ -9,7 +9,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use socket2::{Domain, Protocol, SockFilter, Socket, Type};
 use tokio::net::UdpSocket;
 
-const STUN_MAGIC_COOKIE: u32 = 0x2112_a442;
+use crate::stun::{Datagram, MAGIC_COOKIE, local_address_for};
+
 const UDP_HEADER_LEN: usize = 8;
 const UDP_PROTOCOL: u32 = 17;
 const MAX_DATAGRAM: usize = 2048;
@@ -27,25 +28,14 @@ const BPF_MSH: u16 = 0xa0;
 const BPF_JEQ: u16 = 0x10;
 const BPF_K: u16 = 0x00;
 
-pub fn is_stun(payload: &[u8]) -> bool {
-    payload.get(4..8) == Some(STUN_MAGIC_COOKIE.to_be_bytes().as_slice())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Datagram {
-    pub local: SocketAddr,
-    pub remote: SocketAddr,
-    pub payload: Vec<u8>,
-}
-
-pub struct StunSocket {
+pub struct KernelStun {
     port: u16,
     mark: u32,
     v4: UdpSocket,
     v6: Option<UdpSocket>,
 }
 
-impl StunSocket {
+impl KernelStun {
     pub fn bind(port: u16, mark: u32) -> io::Result<Self> {
         let v4 = raw_socket(Domain::IPV4, mark, &ipv4_filter(port))?;
         let v6 = raw_socket(Domain::IPV6, mark, &ipv6_filter(port))
@@ -130,7 +120,7 @@ fn ipv4_filter(port: u16) -> [SockFilter; 7] {
         SockFilter::new(BPF_LD | BPF_H | BPF_IND, 0, 0, 2),
         SockFilter::new(BPF_JMP | BPF_JEQ | BPF_K, 0, 3, u32::from(port)),
         SockFilter::new(BPF_LD | BPF_W | BPF_IND, 0, 0, 12),
-        SockFilter::new(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, STUN_MAGIC_COOKIE),
+        SockFilter::new(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, MAGIC_COOKIE),
         SockFilter::new(BPF_RET | BPF_K, 0, 0, u32::MAX),
         SockFilter::new(BPF_RET | BPF_K, 0, 0, 0),
     ]
@@ -141,7 +131,7 @@ fn ipv6_filter(port: u16) -> [SockFilter; 6] {
         SockFilter::new(BPF_LD | BPF_H | BPF_ABS, 0, 0, 2),
         SockFilter::new(BPF_JMP | BPF_JEQ | BPF_K, 0, 3, u32::from(port)),
         SockFilter::new(BPF_LD | BPF_W | BPF_ABS, 0, 0, 12),
-        SockFilter::new(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, STUN_MAGIC_COOKIE),
+        SockFilter::new(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, MAGIC_COOKIE),
         SockFilter::new(BPF_RET | BPF_K, 0, 0, u32::MAX),
         SockFilter::new(BPF_RET | BPF_K, 0, 0, 0),
     ]
@@ -215,19 +205,4 @@ fn add_words(sum: &mut u32, bytes: &[u8]) {
         let low = pair.get(1).copied().unwrap_or(0);
         *sum += u32::from(u16::from_be_bytes([pair[0], low]));
     }
-}
-
-fn local_address_for(destination: SocketAddr, mark: u32) -> io::Result<IpAddr> {
-    let probe = Socket::new(
-        Domain::for_address(destination),
-        Type::DGRAM,
-        Some(Protocol::UDP),
-    )?;
-    probe.set_mark(mark)?;
-    probe.connect(&destination.into())?;
-    probe
-        .local_addr()?
-        .as_socket()
-        .map(|local| local.ip())
-        .ok_or_else(|| io::Error::from(io::ErrorKind::AddrNotAvailable))
 }

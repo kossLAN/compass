@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bunnyhop_net::Datagram;
+use bunnyhop_net::{Datagram, Stun};
 use bunnyhop_proto::{CandidateKind, IceCandidate, NodeId, PublicKey, SignalMessage};
 use bytes::BytesMut;
 use ipnet::IpNet;
@@ -20,7 +20,6 @@ use tokio::task::JoinHandle;
 use self::peer::PeerIce;
 use self::stun::TransactionId;
 use crate::binding;
-use crate::client::dataplane::Stun;
 
 const TRANSACTION_TTL: Duration = Duration::from_secs(30);
 const IDLE_WAKEUP: Duration = Duration::from_secs(60);
@@ -73,7 +72,7 @@ pub struct IceHandle {
 
 impl IceHandle {
     pub fn spawn(
-        transport: Option<Arc<dyn Stun>>,
+        transport: Option<Stun>,
         port: u16,
         own_key: PublicKey,
         local_networks: Vec<IpNet>,
@@ -138,7 +137,7 @@ impl Drop for IceHandle {
 }
 
 struct IceService {
-    transport: Arc<dyn Stun>,
+    transport: Stun,
     port: u16,
     own_key: PublicKey,
     crypto: Arc<dyn RTCCryptoProvider>,

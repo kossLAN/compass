@@ -9,9 +9,7 @@ use ipnet::IpNet;
 pub struct DeviceSpec {
     pub name: String,
     pub private_key: PrivateKey,
-    pub listen_port: Option<u16>,
-    pub mtu: u16,
-    pub addresses: Vec<IpNet>,
+    pub listen_port: u16,
     pub fwmark: u32,
 }
 
