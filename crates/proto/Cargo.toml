@@ -1,0 +1,22 @@
+[package]
+name = "bunnyhop-proto"
+description = "Wire and IPC types shared by the bunnyhop client and server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+base64.workspace = true
+bytes.workspace = true
+getrandom.workspace = true
+hmac.workspace = true
+ipnet.workspace = true
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+url.workspace = true
+x25519-dalek.workspace = true
+zeroize.workspace = true

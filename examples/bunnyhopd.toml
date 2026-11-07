@@ -1,0 +1,128 @@
+# bunnyhopd runs a client, a lighthouse, or both: keep the sections this node needs. Neither
+# keeps state; everything is declared here. Reload with SIGHUP.
+
+# Where `bunnyhop status` and other control clients reach the daemon.
+[socket]
+path = "/run/bunnyhop/bunnyhop.sock"
+# Members may use the CLI without root.
+group = "wheel"
+
+# ── Client ──────────────────────────────────────────────────────────────────────────────────
+
+[client]
+# The node registers with every lighthouse. If one goes down, the others keep coordinating
+# and relaying.
+lighthouses = ["https://lh1.example.com:8443", "https://lh2.example.com:8443"]
+# Presented every time the daemon starts. Create one with `bunnyhop authkey`.
+auth_key_file = "/run/secrets/bunnyhop-laptops"
+# Defaults to the system hostname.
+hostname = "laptop"
+# Only needed when the lighthouses' certificate is not from a public CA.
+# ca_file = "/etc/bunnyhop/ca.pem"
+# The node's WireGuard key, its identity; create it with `bunnyhop genkey`. Without it the node
+# gets a new key on every start, registers as a new node and logs out when it stops, so give
+# such nodes a pre-auth key with a short offline_ttl.
+private_key_file = "/run/secrets/bunnyhop-node.key"
+
+[client.interface]
+# The node's only WireGuard interface, for direct and relayed peers alike.
+name = "bh0"
+listen_port = 51821
+# Addresses of these interfaces are never offered to peers; a trailing `*` matches any suffix.
+exclude = ["docker*", "br-*", "veth*", "virbr*"]
+
+[client.dns]
+accept = true
+
+# Published as <name>.mesh.internal. Names below the hostname are always allowed; others need
+# the pre-auth key's `dns` patterns (here lighthouse.keys.laptops allows *.alice).
+[[client.dns.records]]
+name = "grafana.laptop"
+type = "CNAME"
+value = "laptop"
+
+[[client.dns.records]]
+name = "nas.alice"
+type = "A"
+value = "192.168.1.20"
+
+[client.exit_node]
+# Send internet traffic through this peer while a direct path to it is up; without one the
+# traffic is blocked rather than sent out unprotected. `bunnyhop exit-node` overrides this
+# until the daemon restarts or reloads.
+peer = "web"
+# Offer this node as an exit node; its pre-auth key needs `exit_node = true`.
+advertise = false
+
+# ── Lighthouse ──────────────────────────────────────────────────────────────────────────────
+# Every lighthouse of a mesh runs the same section, apart from the hub's endpoint and key.
+
+[lighthouse.api]
+listen = "[::]:8443"
+# Omit both when a reverse proxy terminates TLS.
+tls_cert_file = "/var/lib/acme/lh1.example.com/fullchain.pem"
+tls_key_file = "/var/lib/acme/lh1.example.com/key.pem"
+
+[lighthouse.network]
+# Peers resolve each other as <hostname>.mesh.internal.
+domain = "mesh.internal"
+# Both are required: every node gets one address from each.
+ipv4 = "100.64.0.0/10"
+ipv6 = "fd7a:115c:a1e0::/48"
+
+[lighthouse.hub]
+# Answers STUN, so nodes learn their public address. Relayed traffic goes through the API.
+listen_port = 51820
+# How nodes reach this port.
+endpoint = "lh1.example.com:51820"
+
+[lighthouse.nodes]
+# Every node is removed once it has been offline this long; a key can override it.
+offline_ttl = "30d"
+# Public keys (shown by `bunnyhop status`) that may never register again.
+revoked = []
+
+# Pre-auth keys. Create a secret with `bunnyhop authkey` and point `secret_file` at it. Clients
+# log in with the same secret.
+[lighthouse.keys.laptops]
+secret_file = "/run/secrets/bunnyhop-laptops"
+owner = "alice"
+tags = ["tag:laptop"]
+# Besides `<hostname>` and `*.<hostname>`, nodes with this key may claim these names.
+dns = ["*.alice"]
+
+[lighthouse.keys.ci]
+secret_file = "/run/secrets/bunnyhop-ci"
+tags = ["tag:ci"]
+# Runners without key files are new nodes each run; clean up the ones that crash quickly.
+offline_ttl = "10m"
+
+[lighthouse.keys.servers]
+secret_file = "/run/secrets/bunnyhop-servers"
+tags = ["tag:web"]
+# Nodes with this key may offer themselves as exit nodes.
+exit_node = true
+
+[lighthouse.groups]
+admins = ["alice"]
+
+# Default deny. Each rule allows `src` to reach `dst`; replies are always allowed.
+[[lighthouse.acl]]
+src = ["group:admins"]
+dst = ["*"]
+
+[[lighthouse.acl]]
+src = ["tag:laptop", "tag:ci"]
+dst = ["tag:web"]
+proto = "tcp"
+ports = [80, 443]
+
+[[lighthouse.acl]]
+src = ["*"]
+dst = ["*"]
+proto = "icmp"
+
+# Admins may send their internet traffic through any exit node they can reach.
+[[lighthouse.acl]]
+src = ["group:admins"]
+dst = ["autogroup:internet"]

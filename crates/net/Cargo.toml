@@ -1,0 +1,24 @@
+[package]
+name = "bunnyhop-net"
+description = "Linux WireGuard, routing, nftables and resolvconf integration for bunnyhop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bunnyhop-proto.workspace = true
+
+futures-util.workspace = true
+genetlink.workspace = true
+ipnet.workspace = true
+netlink-packet-core.workspace = true
+netlink-packet-generic.workspace = true
+netlink-packet-wireguard.workspace = true
+rtnetlink.workspace = true
+socket2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

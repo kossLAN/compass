@@ -1,0 +1,22 @@
+[package]
+name = "bunnyhop-config"
+description = "TOML configuration for bunnyhopd: its client and lighthouse"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bunnyhop-acl.workspace = true
+bunnyhop-proto.workspace = true
+
+ipnet.workspace = true
+jiff.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true
+url.workspace = true
+zeroize.workspace = true

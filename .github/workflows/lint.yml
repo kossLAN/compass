@@ -1,0 +1,43 @@
+name: Lint
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  nix:
+    name: Nix
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+
+      - name: Check formatting
+        run: nix fmt -- --ci
+
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ hashFiles('flake.lock', 'Cargo.lock') }}
+          restore-keys: rust-
+
+      - name: Check formatting
+        run: nix develop -c cargo fmt --all --check
+
+      - name: Run clippy
+        run: nix develop -c cargo clippy --workspace --all-targets --locked -- -D warnings
