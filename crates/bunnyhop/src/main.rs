@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use crate::control::Control;
 use bunnyhop_config::DEFAULT_SOCKET;
 use bunnyhop_proto::{AuthKey, DnsName, ExitNodeChoice, PrivateKey};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -34,23 +34,31 @@ struct Cli {
 enum Command {
     #[command(about = "Show the connection and peers")]
     Status {
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: Output,
     },
     #[command(about = "List this node's DNS records and whether the lighthouse accepted them")]
     Dns {
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: Output,
     },
-    #[command(
-        subcommand,
-        about = "Change the exit node until bunnyhopd restarts or reloads"
-    )]
-    ExitNode(ExitNodeCommand),
+    #[command(about = "Change the exit node until bunnyhopd restarts or reloads")]
+    ExitNode {
+        #[command(subcommand)]
+        command: ExitNodeCommand,
+        #[command(flatten)]
+        output: Output,
+    },
     #[command(about = "Generate a WireGuard private key for a node or a hub")]
     Genkey,
     #[command(about = "Generate a pre-auth key secret")]
     Authkey,
+}
+
+#[derive(Args)]
+struct Output {
+    #[arg(long, global = true, help = "Print JSON instead of text")]
+    json: bool,
 }
 
 #[derive(Subcommand)]
@@ -87,16 +95,16 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let control = Control::new(cli.socket);
 
     match cli.command {
-        Command::Status { json } => ctl::status(&control, json).await,
-        Command::Dns { json } => ctl::dns(&control, json).await,
-        Command::ExitNode(command) => {
+        Command::Status { output } => ctl::status(&control, output.json).await,
+        Command::Dns { output } => ctl::dns(&control, output.json).await,
+        Command::ExitNode { command, output } => {
             let choice = match command {
                 ExitNodeCommand::Use { peer } => ExitNodeChoice::Peer(peer),
                 ExitNodeCommand::Off => ExitNodeChoice::Off,
                 ExitNodeCommand::Reset => ExitNodeChoice::Config,
             };
 
-            ctl::set_exit_node(&control, choice).await
+            ctl::set_exit_node(&control, choice, output.json).await
         },
         Command::Genkey => {
             let key = PrivateKey::generate().to_base64();
