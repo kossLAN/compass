@@ -10,9 +10,6 @@ group = "wheel"
 # ── Client ──────────────────────────────────────────────────────────────────────────────────
 
 [client]
-# The node registers with every lighthouse. If one goes down, the others keep coordinating
-# and relaying.
-lighthouses = ["https://lh1.example.com:8443", "https://lh2.example.com:8443"]
 # Presented every time the daemon starts. Create one with `bunnyhop authkey`.
 auth_key_file = "/run/secrets/bunnyhop-laptops"
 # Defaults to the system hostname.
@@ -24,35 +21,64 @@ hostname = "laptop"
 # such nodes a pre-auth key with a short offline_ttl.
 private_key_file = "/run/secrets/bunnyhop-node.key"
 
+# The node registers with every lighthouse. Lighthouses that share an auth key serve one mesh:
+# if one goes down, the others keep coordinating and relaying. Settings below apply to the
+# lighthouse's whole mesh; lighthouses of one mesh may each set them but must not disagree.
+# Without settings, a plain list works too:
+# lighthouses = ["https://lh1.example.com:8443", "https://lh2.example.com:8443"]
+[[client.lighthouses]]
+url = "https://lh1.example.com:8443"
+
+[client.lighthouses.dns]
+# Resolve this mesh's names through a stub registered with resolvconf.
+accept = true
+
+# Records this node publishes in the lighthouse's mesh, as <name>.mesh.internal. Names below
+# the hostname are always allowed; others need the pre-auth key's `dns` patterns (here
+# lighthouse.keys.laptops allows *.alice and *.home.arpa.).
+[[client.lighthouses.dns.records]]
+name = "grafana.laptop"
+type = "CNAME"
+value = "laptop"
+
+[[client.lighthouses.dns.records]]
+name = "nas.alice"
+type = "A"
+value = "192.168.1.20"
+
+# With `zone`, the record goes into one of the lighthouse's zones as <name>.<zone> instead, and
+# `name = "@"` is the zone itself. Only the key's `dns` patterns can allow it.
+[[client.lighthouses.dns.records]]
+zone = "home.arpa"
+name = "printer"
+type = "A"
+value = "192.168.1.30"
+
+[client.lighthouses.exit_node]
+# Send internet traffic through this peer of the mesh while a direct path to it is up; without
+# one the traffic is blocked rather than sent out unprotected. Only one mesh can set it.
+# `bunnyhop exit-node` overrides this until the daemon restarts or reloads.
+peer = "web"
+# Offer this node as an exit node in the mesh; its pre-auth key needs `exit_node = true`.
+advertise = false
+
+# The same mesh as lh1, so it publishes lh1's records and uses lh1's settings too.
+[[client.lighthouses]]
+url = "https://lh2.example.com:8443"
+
+# Another mesh, with its own key and settings. When two meshes answer for the same zone or
+# domain, this node keeps the one whose lighthouse is listed first.
+[[client.lighthouses]]
+url = "https://lh.work.example:8443"
+auth_key_file = "/run/secrets/bunnyhop-work"
+dns = { accept = false }
+
 [client.interface]
 # The node's only WireGuard interface, for direct and relayed peers alike.
 name = "bh0"
 listen_port = 51821
 # Addresses of these interfaces are never offered to peers; a trailing `*` matches any suffix.
 exclude = ["docker*", "br-*", "veth*", "virbr*"]
-
-[client.dns]
-accept = true
-
-# Published as <name>.mesh.internal. Names below the hostname are always allowed; others need
-# the pre-auth key's `dns` patterns (here lighthouse.keys.laptops allows *.alice).
-[[client.dns.records]]
-name = "grafana.laptop"
-type = "CNAME"
-value = "laptop"
-
-[[client.dns.records]]
-name = "nas.alice"
-type = "A"
-value = "192.168.1.20"
-
-[client.exit_node]
-# Send internet traffic through this peer while a direct path to it is up; without one the
-# traffic is blocked rather than sent out unprotected. `bunnyhop exit-node` overrides this
-# until the daemon restarts or reloads.
-peer = "web"
-# Offer this node as an exit node; its pre-auth key needs `exit_node = true`.
-advertise = false
 
 # ── Lighthouse ──────────────────────────────────────────────────────────────────────────────
 # Every lighthouse of a mesh runs the same section, apart from the hub's endpoint and key.
@@ -66,6 +92,10 @@ tls_key_file = "/var/lib/acme/lh1.example.com/key.pem"
 [lighthouse.network]
 # Peers resolve each other as <hostname>.mesh.internal.
 domain = "mesh.internal"
+# More zones the mesh answers for. Nodes publish records in them as their key's `dns` patterns
+# allow, and clients answer every other name in them with NXDOMAIN. Unlike the rest of this
+# section, zones can change on reload.
+zones = ["home.arpa"]
 # Both are required: every node gets one address from each.
 ipv4 = "100.64.0.0/10"
 ipv6 = "fd7a:115c:a1e0::/48"
@@ -88,8 +118,9 @@ revoked = []
 secret_file = "/run/secrets/bunnyhop-laptops"
 owner = "alice"
 tags = ["tag:laptop"]
-# Besides `<hostname>` and `*.<hostname>`, nodes with this key may claim these names.
-dns = ["*.alice"]
+# Besides `<hostname>` and `*.<hostname>`, nodes with this key may claim these names. Names
+# are under the mesh domain unless they end in a dot.
+dns = ["*.alice", "*.home.arpa."]
 
 [lighthouse.keys.ci]
 secret_file = "/run/secrets/bunnyhop-ci"

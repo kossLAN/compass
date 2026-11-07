@@ -47,6 +47,8 @@ impl View {
 
 pub struct ExitNode {
     pub peer: DnsName,
+    /// `None` takes the first mesh that offers `peer` as an exit node.
+    pub mesh: Option<usize>,
     pub bypass: Vec<IpAddr>,
 }
 
@@ -57,7 +59,7 @@ pub struct Engine {
     ice: IceHandle,
     dns: DnsService,
     own_key: PublicKey,
-    accept_dns: bool,
+    dns_meshes: BTreeSet<usize>,
     lighthouses: Vec<Url>,
     exit_node: Option<ExitNode>,
     view: Option<View>,
@@ -105,7 +107,7 @@ pub struct Setup<'a> {
     pub dataplane: Arc<Dataplane>,
     pub interface: &'a InterfaceConfig,
     pub key: &'a PrivateKey,
-    pub accept_dns: bool,
+    pub dns_meshes: BTreeSet<usize>,
     pub lighthouses: Vec<Url>,
     pub local_networks: Vec<IpNet>,
     pub ice_events: mpsc::Sender<(u64, IceEvent)>,
@@ -132,7 +134,7 @@ impl Engine {
             ice,
             dns: DnsService::default(),
             own_key,
-            accept_dns: setup.accept_dns,
+            dns_meshes: setup.dns_meshes,
             lighthouses: setup.lighthouses,
             exit_node: None,
             view: None,
@@ -186,13 +188,31 @@ impl Engine {
                 .collect(),
         );
 
-        let meshes = view.meshes.clone();
+        let meshes: Vec<Mesh> = view
+            .meshes
+            .iter()
+            .filter(|mesh| self.dns_meshes.contains(&mesh.index))
+            .cloned()
+            .collect();
+        let mut lighthouses: BTreeMap<usize, Url> = BTreeMap::new();
+
+        for (lighthouse, mesh) in &view.serves {
+            if let Some(url) = self.lighthouses.get(*lighthouse) {
+                lighthouses.entry(*mesh).or_insert_with(|| url.clone());
+            }
+        }
+
         self.view = Some(view);
         self.sync(&[]).await?;
 
-        if self.accept_dns {
+        if !self.dns_meshes.is_empty() {
             self.dns
-                .update(&self.dataplane, self.backend.interface(), &meshes)
+                .update(
+                    &self.dataplane,
+                    self.backend.interface(),
+                    &meshes,
+                    &lighthouses,
+                )
                 .await;
         }
 
@@ -240,10 +260,11 @@ impl Engine {
             proxies: &proxies,
             healthy: &healthy,
             exit_node: self.exit_node.as_ref(),
-            local_dns: self
-                .accept_dns
-                .then(|| dns::stub_address(&view.meshes))
-                .flatten(),
+            local_dns: dns::stub_address(
+                view.meshes
+                    .iter()
+                    .filter(|mesh| self.dns_meshes.contains(&mesh.index)),
+            ),
         }))
     }
 

@@ -47,6 +47,8 @@ impl Default for RawApi {
 #[serde(deny_unknown_fields)]
 pub struct RawNetwork {
     pub domain: DnsName,
+    #[serde(default)]
+    pub zones: Vec<DnsName>,
     pub ipv4: Ipv4Net,
     pub ipv6: Ipv6Net,
     #[serde(default = "default_mtu")]

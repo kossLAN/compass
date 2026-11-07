@@ -1,6 +1,8 @@
 mod stub;
 mod zone;
 
+use std::collections::BTreeMap;
+use std::iter;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,6 +14,7 @@ use hickory_server::proto::rr::Name;
 use ipnet::IpNet;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 use self::stub::Stub;
 use self::zone::Zone;
@@ -21,36 +24,61 @@ const TCP_TIMEOUT: Duration = Duration::from_secs(5);
 const TCP_RESPONSE_BUFFER: usize = 32;
 const ARPA_LABELS: usize = 2;
 
-pub fn stub_address(meshes: &[Mesh]) -> Option<IpAddr> {
-    meshes.first()?.addresses.first().copied()
+pub fn stub_address<'a>(meshes: impl IntoIterator<Item = &'a Mesh>) -> Option<IpAddr> {
+    meshes.into_iter().next()?.addresses.first().copied()
 }
 
-fn search(meshes: &[Mesh]) -> Vec<DnsName> {
-    let mut domains: Vec<DnsName> = Vec::new();
+/// The forward zones each mesh answers for on this node, in the order of `meshes`, and the ones
+/// left out because an earlier mesh answers for an overlapping zone. Reverse zones are not
+/// claimed: meshes often share a prefix, and `meshes::resolve` already gives each address to a
+/// single node.
+fn claim_zones(meshes: &[Mesh]) -> (Vec<Vec<DnsName>>, Vec<(usize, DnsName)>) {
+    let mut claimed: Vec<&DnsName> = Vec::new();
+    let mut owned = Vec::new();
+    let mut shadowed = Vec::new();
 
     for mesh in meshes {
-        if !domains.contains(&mesh.netmap.network.domain) {
-            domains.push(mesh.netmap.network.domain.clone());
+        let network = &mesh.netmap.network;
+        let mut zones = Vec::new();
+
+        for zone in iter::once(&network.domain).chain(&network.zones) {
+            if claimed.iter().any(|other| zone.overlaps(other)) {
+                shadowed.push((mesh.index, zone.clone()));
+            } else {
+                claimed.push(zone);
+                zones.push(zone.clone());
+            }
         }
+
+        owned.push(zones);
     }
 
-    domains
+    (owned, shadowed)
 }
 
-fn domains(meshes: &[Mesh]) -> Vec<DnsName> {
-    let mut domains = search(meshes);
+fn search(meshes: &[Mesh], owned: &[Vec<DnsName>]) -> Vec<String> {
+    meshes
+        .iter()
+        .zip(owned)
+        .filter(|(mesh, zones)| zones.contains(&mesh.netmap.network.domain))
+        .map(|(mesh, _)| mesh.netmap.network.domain.to_string())
+        .collect()
+}
 
-    for zone in meshes
+fn origins(meshes: &[Mesh], owned: &[Vec<DnsName>]) -> Vec<DnsName> {
+    let mut origins: Vec<DnsName> = owned.iter().flatten().cloned().collect();
+    let reverse = meshes
         .iter()
         .flat_map(|mesh| mesh.netmap.network.prefixes())
-        .flat_map(reverse_zones)
-    {
-        if !domains.contains(&zone) {
-            domains.push(zone);
+        .flat_map(reverse_zones);
+
+    for zone in reverse {
+        if !origins.contains(&zone) {
+            origins.push(zone);
         }
     }
 
-    domains
+    origins
 }
 
 fn reverse_zones(prefix: IpNet) -> Vec<DnsName> {
@@ -79,13 +107,34 @@ pub struct DnsService {
     stub: Option<(IpAddr, CancellationToken)>,
     registered: Option<LinkDns>,
     registration_failing: bool,
+    shadowed: Vec<(usize, DnsName)>,
 }
 
 impl DnsService {
-    pub async fn update(&mut self, dataplane: &Dataplane, device: &str, meshes: &[Mesh]) {
-        let domains = domains(meshes);
+    pub async fn update(
+        &mut self,
+        dataplane: &Dataplane,
+        device: &str,
+        meshes: &[Mesh],
+        lighthouses: &BTreeMap<usize, Url>,
+    ) {
+        let (owned, shadowed) = claim_zones(meshes);
+
+        for (mesh, zone) in shadowed
+            .iter()
+            .filter(|entry| !self.shadowed.contains(entry))
+        {
+            tracing::warn!(
+                %zone,
+                lighthouse = lighthouses.get(mesh).map_or("", |url| url.as_str()),
+                "an earlier lighthouse in client.lighthouses already answers for this zone or one overlapping it; ignoring the names this lighthouse has in it",
+            );
+        }
+
+        self.shadowed = shadowed;
+        let origins = origins(meshes, &owned);
         self.zone
-            .store(Arc::new(Zone::from_meshes(meshes, &domains)));
+            .store(Arc::new(Zone::from_meshes(meshes, &owned, &origins)));
 
         let Some(address) = stub_address(meshes) else {
             return;
@@ -102,7 +151,7 @@ impl DnsService {
 
         let dns = LinkDns {
             servers: vec![address],
-            search: search(meshes).iter().map(ToString::to_string).collect(),
+            search: search(meshes, &owned),
         };
 
         if self.registered.as_ref() == Some(&dns) {

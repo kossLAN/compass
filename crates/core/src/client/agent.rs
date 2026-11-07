@@ -1,15 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::iter;
 use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bunnyhop_config::{ClientConfig, ConfigError, read_key};
 use bunnyhop_net::Dataplane;
 use bunnyhop_proto::{
-    AuthKey, DnsName, ExitNodeChoice, ExitNodeStatus, LighthouseState, LighthouseStatus, NetMap,
-    Network, NodeInfo, NodeStatus, Phase, PrivateKey, RecordEntry, SecretHash, SignalEnvelope,
-    StatusReport, Token,
+    AuthKey, DnsName, DnsRecord, ExitNodeChoice, ExitNodeStatus, LighthouseState, LighthouseStatus,
+    MAX_RECORDS, NetMap, Network, NodeInfo, NodeStatus, Phase, PrivateKey, RecordEntry, SecretHash,
+    SignalEnvelope, StatusReport, Token,
 };
 use ipnet::IpNet;
 use tokio::sync::{mpsc, watch};
@@ -30,6 +30,14 @@ struct RunningSession {
     id: u64,
     task: JoinHandle<()>,
     signals: mpsc::Sender<SignalEnvelope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MeshSettings {
+    records: Vec<DnsRecord>,
+    accept_dns: bool,
+    exit_peer: Option<DnsName>,
+    advertise_exit_node: bool,
 }
 
 struct LighthouseConnection {
@@ -82,6 +90,7 @@ pub struct Agent {
     failure: Option<String>,
     apply_error: Option<String>,
     infos: Vec<watch::Sender<NodeInfo>>,
+    settings: Vec<MeshSettings>,
     avoided: BTreeMap<usize, Vec<IpAddr>>,
     pinned: BTreeMap<usize, Network>,
     local_networks: Vec<IpNet>,
@@ -106,8 +115,9 @@ impl Agent {
             );
             PrivateKey::generate()
         };
+        let settings = mesh_settings(&config, &keys)?;
         let lighthouses = lighthouses(&config, keys);
-        let infos = infos(&config, &lighthouses);
+        let infos = infos(&config, &settings);
         Ok(Self {
             config,
             key,
@@ -122,6 +132,7 @@ impl Agent {
             failure: None,
             apply_error: None,
             infos,
+            settings,
             avoided: BTreeMap::new(),
             pinned: BTreeMap::new(),
             local_networks: Vec::new(),
@@ -183,14 +194,19 @@ impl Agent {
     }
 
     fn exit_node(&self) -> Option<ExitNode> {
-        let peer = match &self.exit_choice {
-            ExitNodeChoice::Config => self.config.exit_node.peer.clone()?,
+        let (mesh, peer) = match &self.exit_choice {
+            ExitNodeChoice::Config => self
+                .settings
+                .iter()
+                .enumerate()
+                .find_map(|(index, mesh)| Some((Some(index), mesh.exit_peer.clone()?)))?,
             ExitNodeChoice::Off => return None,
-            ExitNodeChoice::Peer(peer) => peer.clone(),
+            ExitNodeChoice::Peer(peer) => (None, peer.clone()),
         };
 
         Some(ExitNode {
             peer,
+            mesh,
             bypass: self.lighthouse_addresses.clone(),
         })
     }
@@ -374,12 +390,20 @@ impl Agent {
 
     pub async fn reload(&mut self, config: ClientConfig) -> Result<(), ConfigError> {
         let keys = config.read_auth_keys()?;
+        let settings = mesh_settings(&config, &keys)?;
         let key = match &config.private_key_file {
             Some(path) => read_key(path)?,
             None => self.key.clone(),
         };
 
-        let lighthouses_changed = config.lighthouses != self.config.lighthouses;
+        let endpoints = |config: &ClientConfig| -> Vec<(Url, Option<PathBuf>)> {
+            config
+                .lighthouses
+                .iter()
+                .map(|entry| (entry.url.clone(), entry.auth_key_file.clone()))
+                .collect()
+        };
+        let lighthouses_changed = endpoints(&config) != endpoints(&self.config);
         let auth_keys_changed = self
             .lighthouses
             .iter()
@@ -390,7 +414,7 @@ impl Agent {
             || auth_keys_changed
             || key_changed
             || config.interface != self.config.interface
-            || config.dns.accept != self.config.dns.accept;
+            || dns_meshes(&settings) != dns_meshes(&self.settings);
         let restart = rebuild || config.ca_file != self.config.ca_file || self.failure.is_some();
 
         if key_changed {
@@ -401,12 +425,13 @@ impl Agent {
 
         self.config = config;
         self.key = key;
+        self.settings = settings;
         self.exit_choice = ExitNodeChoice::Config;
 
         if rebuild {
             self.shutdown().await;
             self.lighthouses = lighthouses(&self.config, keys);
-            self.infos = infos(&self.config, &self.lighthouses);
+            self.infos = infos(&self.config, &self.settings);
         }
 
         self.publish_info();
@@ -530,32 +555,32 @@ impl Agent {
     }
 
     pub fn records(&self) -> Vec<RecordEntry> {
-        let records = &self.config.dns.records;
+        let meshes = self.view().map(|view| view.meshes).unwrap_or_default();
 
-        let Some(view) = self.view() else {
-            return records
-                .iter()
-                .map(|record| RecordEntry {
-                    record: record.clone(),
-                    mesh: None,
-                    state: None,
-                })
-                .collect();
-        };
-
-        view.meshes
+        self.settings
             .iter()
-            .flat_map(|mesh| {
-                records.iter().map(|record| RecordEntry {
+            .enumerate()
+            .flat_map(|(index, settings)| {
+                let mesh = meshes.iter().find(|mesh| mesh.index == index);
+                let lighthouses: Vec<Url> = self
+                    .lighthouses
+                    .iter()
+                    .filter(|lighthouse| lighthouse.mesh == index)
+                    .map(|lighthouse| lighthouse.url.clone())
+                    .collect();
+
+                settings.records.iter().map(move |record| RecordEntry {
                     record: record.clone(),
-                    mesh: Some(mesh.netmap.network.domain.clone()),
-                    state: mesh
-                        .netmap
-                        .node
-                        .records
-                        .iter()
-                        .find(|status| status.record == *record)
-                        .map(|status| status.state),
+                    mesh: mesh.map(|mesh| mesh.netmap.network.domain.clone()),
+                    lighthouses: lighthouses.clone(),
+                    state: mesh.and_then(|mesh| {
+                        mesh.netmap
+                            .node
+                            .records
+                            .iter()
+                            .find(|status| status.record == *record)
+                            .map(|status| status.state)
+                    }),
                 })
             })
             .collect()
@@ -631,7 +656,7 @@ impl Agent {
                 dataplane: Arc::clone(&self.dataplane),
                 interface: &self.config.interface,
                 key: &self.key,
-                accept_dns: self.config.dns.accept,
+                dns_meshes: dns_meshes(&self.settings),
                 lighthouses: self
                     .config
                     .lighthouses
@@ -722,7 +747,7 @@ impl Agent {
     fn publish_info(&self) {
         for (mesh, sender) in self.infos.iter().enumerate() {
             let avoid = self.avoided.get(&mesh).cloned().unwrap_or_default();
-            let info = node_info(&self.config, avoid);
+            let info = node_info(&self.config, &self.settings[mesh], avoid);
             sender.send_if_modified(|current| {
                 let changed = *current != info;
                 *current = info;
@@ -732,41 +757,166 @@ impl Agent {
     }
 }
 
-fn lighthouses(config: &ClientConfig, keys: Vec<AuthKey>) -> Vec<LighthouseConnection> {
+/// Lighthouses that share an auth key serve one mesh; meshes are numbered in the order their
+/// first lighthouse is listed.
+fn mesh_indices(keys: &[AuthKey]) -> Vec<usize> {
     let mut meshes: Vec<SecretHash> = Vec::new();
-    config
-        .lighthouses
-        .iter()
-        .zip(keys)
-        .map(|(entry, auth_key)| {
-            let hash = auth_key.hash();
-            let mesh = meshes
+    keys.iter()
+        .map(|key| {
+            let hash = key.hash();
+            meshes
                 .iter()
                 .position(|known| *known == hash)
                 .unwrap_or_else(|| {
                     meshes.push(hash);
                     meshes.len() - 1
-                });
+                })
+        })
+        .collect()
+}
+
+fn lighthouses(config: &ClientConfig, keys: Vec<AuthKey>) -> Vec<LighthouseConnection> {
+    let meshes = mesh_indices(&keys);
+    config
+        .lighthouses
+        .iter()
+        .zip(keys)
+        .zip(meshes)
+        .map(|((entry, auth_key), mesh)| {
             LighthouseConnection::new(entry.url.clone(), mesh, auth_key)
         })
         .collect()
 }
 
-fn infos(
+/// Every lighthouse of a mesh must be sent the same node info, so the settings listed on each of
+/// them are combined: records are merged, and the rest may be set on any of them but must not
+/// disagree.
+fn mesh_settings(
     config: &ClientConfig,
-    lighthouses: &[LighthouseConnection],
-) -> Vec<watch::Sender<NodeInfo>> {
-    let count = lighthouses
+    keys: &[AuthKey],
+) -> Result<Vec<MeshSettings>, ConfigError> {
+    #[derive(Default)]
+    struct Combined {
+        records: Vec<DnsRecord>,
+        accept_dns: Option<bool>,
+        exit_peer: Option<DnsName>,
+        advertise_exit_node: Option<bool>,
+    }
+
+    let mut meshes: Vec<Combined> = Vec::new();
+
+    for (entry, mesh) in config.lighthouses.iter().zip(mesh_indices(keys)) {
+        if mesh == meshes.len() {
+            meshes.push(Combined::default());
+        }
+
+        let url = &entry.url;
+        let combined = &mut meshes[mesh];
+
+        for record in &entry.dns.records {
+            if !combined.records.contains(record) {
+                combined.records.push(record.clone());
+            }
+        }
+
+        if combined.records.len() > MAX_RECORDS {
+            return Err(ConfigError::invalid(
+                "client.lighthouses",
+                format!(
+                    "\"{url}\" shares an auth key with other lighthouses, so they serve one mesh, \
+                     and together they list more than {MAX_RECORDS} records"
+                ),
+            ));
+        }
+
+        agree(
+            url,
+            "dns.accept",
+            &mut combined.accept_dns,
+            entry.dns.accept,
+        )?;
+        agree(
+            url,
+            "exit_node.peer",
+            &mut combined.exit_peer,
+            entry.exit_node.peer.clone(),
+        )?;
+        agree(
+            url,
+            "exit_node.advertise",
+            &mut combined.advertise_exit_node,
+            entry.exit_node.advertise,
+        )?;
+    }
+
+    if meshes
         .iter()
-        .map(|lighthouse| lighthouse.mesh + 1)
-        .max()
-        .unwrap_or_default();
-    iter::repeat_with(|| watch::channel(node_info(config, Vec::new())).0)
-        .take(count)
+        .filter(|mesh| mesh.exit_peer.is_some())
+        .count()
+        > 1
+    {
+        return Err(ConfigError::invalid(
+            "client.lighthouses",
+            "exit_node.peer is set for more than one mesh, but internet traffic leaves through a \
+             single exit node",
+        ));
+    }
+
+    Ok(meshes
+        .into_iter()
+        .map(|combined| MeshSettings {
+            records: combined.records,
+            accept_dns: combined.accept_dns.unwrap_or(true),
+            exit_peer: combined.exit_peer,
+            advertise_exit_node: combined.advertise_exit_node.unwrap_or_default(),
+        })
+        .collect())
+}
+
+fn agree<T>(
+    url: &Url,
+    setting: &str,
+    combined: &mut Option<T>,
+    value: Option<T>,
+) -> Result<(), ConfigError>
+where
+    T: PartialEq,
+{
+    let Some(value) = value else {
+        return Ok(());
+    };
+
+    if combined.as_ref().is_some_and(|current| *current != value) {
+        return Err(ConfigError::invalid(
+            "client.lighthouses",
+            format!(
+                "\"{url}\" sets {setting} differently from a lighthouse with the same auth key, \
+                 though they serve one mesh"
+            ),
+        ));
+    }
+
+    *combined = Some(value);
+    Ok(())
+}
+
+fn dns_meshes(settings: &[MeshSettings]) -> BTreeSet<usize> {
+    settings
+        .iter()
+        .enumerate()
+        .filter(|(_, mesh)| mesh.accept_dns)
+        .map(|(index, _)| index)
         .collect()
 }
 
-fn node_info(config: &ClientConfig, avoid: Vec<IpAddr>) -> NodeInfo {
+fn infos(config: &ClientConfig, settings: &[MeshSettings]) -> Vec<watch::Sender<NodeInfo>> {
+    settings
+        .iter()
+        .map(|mesh| watch::channel(node_info(config, mesh, Vec::new())).0)
+        .collect()
+}
+
+fn node_info(config: &ClientConfig, mesh: &MeshSettings, avoid: Vec<IpAddr>) -> NodeInfo {
     let hostname = config
         .hostname
         .clone()
@@ -777,8 +927,8 @@ fn node_info(config: &ClientConfig, avoid: Vec<IpAddr>) -> NodeInfo {
         .unwrap_or_else(|| "node".parse().expect("valid label"));
     NodeInfo {
         hostname,
-        records: config.dns.records.clone(),
-        advertise_exit_node: config.exit_node.advertise,
+        records: mesh.records.clone(),
+        advertise_exit_node: mesh.advertise_exit_node,
         avoid,
     }
 }

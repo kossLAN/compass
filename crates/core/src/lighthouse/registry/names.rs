@@ -89,13 +89,14 @@ fn candidates(requested: &DnsName, id: NodeId) -> impl Iterator<Item = DnsName> 
 }
 
 fn reserved_hostnames(config: &LighthouseConfig, own: &str) -> BTreeSet<DnsName> {
+    let domain = &config.network.domain;
     let claimed = |key: &KeyConfig| -> BTreeSet<DnsName> {
         key.dns
             .iter()
             .filter_map(|pattern| match pattern {
                 NamePattern::Any => None,
                 NamePattern::Exact(name) | NamePattern::Below(name) => {
-                    name.last_label().parse().ok()
+                    name.relative_to(domain)?.last_label().parse().ok()
                 },
             })
             .collect()
@@ -132,39 +133,51 @@ struct Context<'a> {
 
 impl Context<'_> {
     fn check(&self, record: &DnsRecord, claims: &mut Claims) -> Result<(), RejectReason> {
-        let name = &record.name;
-        let hostname = &self.node.hostname;
+        let network = &self.config.network;
+        let domain = &network.domain;
+        let zone = record.zone.as_ref().unwrap_or(domain);
 
-        let domain = &self.config.network.domain;
-        let fits = |name: &DnsName| name.join(domain).is_ok();
+        if zone != domain && !network.zones.contains(zone) {
+            return Err(RejectReason::UnknownZone);
+        }
 
         let target_fits = match &record.data {
-            RecordData::Cname(CnameTarget::Mesh(target)) => fits(target),
+            RecordData::Cname(CnameTarget::Mesh(target)) => target.join(domain).is_ok(),
             _ => true,
         };
 
-        if !fits(name) || !target_fits {
-            return Err(RejectReason::TooLong);
+        let name = match record.fqdn(domain) {
+            Ok(name) if target_fits => name,
+            _ => return Err(RejectReason::TooLong),
+        };
+
+        let hostname = &self.node.hostname;
+        let mesh_name = if zone == domain {
+            record.name.as_ref()
+        } else {
+            None
+        };
+
+        if let Some(mesh_name) = mesh_name {
+            if mesh_name == hostname {
+                return Err(RejectReason::Reserved);
+            }
+
+            if self
+                .nodes
+                .values()
+                .any(|other| other.id != self.node.id && mesh_name.is_at_or_under(&other.hostname))
+            {
+                return Err(RejectReason::OwnedByOther);
+            }
         }
 
-        if name == hostname {
-            return Err(RejectReason::Reserved);
-        }
-
-        if self
-            .nodes
-            .values()
-            .any(|other| other.id != self.node.id && name.is_at_or_under(&other.hostname))
-        {
-            return Err(RejectReason::OwnedByOther);
-        }
-
-        let permitted = name.is_under(hostname)
+        let permitted = mesh_name.is_some_and(|mesh_name| mesh_name.is_under(hostname))
             || self
                 .config
                 .keys
                 .get(&self.node.key_name)
-                .is_some_and(|key| key.permits(name));
+                .is_some_and(|key| key.permits(&name));
 
         if !permitted {
             return Err(RejectReason::NotPermitted);
@@ -177,7 +190,7 @@ impl Context<'_> {
         let kind = record.kind();
         let (owner, kinds) = claims
             .names
-            .entry(name.clone())
+            .entry(name)
             .or_insert_with(|| (self.node.id, BTreeSet::new()));
 
         if *owner != self.node.id {

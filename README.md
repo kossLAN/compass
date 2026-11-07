@@ -22,10 +22,12 @@ It comes with two programs and a library:
   hostnames are derived from each node's key, so every lighthouse agrees on them, and a
   restarted lighthouse gets its nodes back as they register again.
 - **Built-in DNS.** Every node gets a name under the mesh domain and can publish its own A, AAAA
-  and CNAME records, and mesh addresses resolve back to names. The daemon registers its stub
-  with `resolvconf` ahead of the host's other nameservers, and the stub refuses everything
-  outside the mesh so lookups fall through to them. That works with openresolv,
-  and with systemd-resolved through its `resolvconf` shim.
+  and CNAME records, there or in other zones the lighthouse serves, such as `home.arpa`. Records,
+  like the other DNS and exit node settings, are set per lighthouse, so a node in several meshes
+  decides what each one gets. Mesh addresses resolve back to names. The daemon registers its
+  stub with `resolvconf` ahead of the host's other nameservers, and the stub refuses everything
+  outside the mesh's domain and zones so lookups fall through to them. That works with
+  openresolv, and with systemd-resolved through its `resolvconf` shim.
 - **NAT traversal.** Peers talk directly when hole punching works, and relay through a
   lighthouse when it doesn't. Relayed packets are still WireGuard-encrypted between the two
   peers, so the lighthouse only forwards them.

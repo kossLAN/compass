@@ -160,8 +160,8 @@ fn print_records(records: &[RecordEntry]) -> anyhow::Result<()> {
         writeln!(
             out,
             "{:<24} {:<32} {:<6} {:<40} {}",
-            entry.mesh.as_ref().map_or("-", |mesh| mesh.as_str()),
-            entry.record.name.as_str(),
+            mesh(entry),
+            entry.record.owner(),
             entry.record.kind().as_str(),
             entry.record.data.to_string(),
             state,
@@ -169,6 +169,19 @@ fn print_records(records: &[RecordEntry]) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn mesh(entry: &RecordEntry) -> String {
+    if let Some(mesh) = &entry.mesh {
+        return mesh.to_string();
+    }
+
+    entry
+        .lighthouses
+        .first()
+        .and_then(|url| url.host_str())
+        .unwrap_or("-")
+        .to_owned()
 }
 
 fn join(addresses: &[IpAddr]) -> String {

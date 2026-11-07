@@ -37,10 +37,10 @@ struct Builder {
 }
 
 impl Zone {
-    pub fn from_meshes(meshes: &[Mesh], domains: &[DnsName]) -> Self {
+    pub fn from_meshes(meshes: &[Mesh], owned: &[Vec<DnsName>], origins: &[DnsName]) -> Self {
         let mut builder = Builder {
             zone: Self {
-                origins: domains
+                origins: origins
                     .iter()
                     .filter_map(absolute)
                     .map(Into::into)
@@ -50,25 +50,31 @@ impl Zone {
             owners: BTreeMap::new(),
         };
 
-        for mesh in meshes {
+        for (mesh, zones) in meshes.iter().zip(owned) {
             let domain = &mesh.netmap.network.domain;
             let node = &mesh.netmap.node;
             let taken = mesh.taken();
-            builder.add_host(mesh.index, &node.hostname, &mesh.addresses, domain);
+
+            if zones.contains(domain) {
+                builder.add_host(mesh.index, &node.hostname, &mesh.addresses, domain);
+            }
 
             for status in &node.records {
                 if status.state == RecordState::Accepted {
-                    builder.add_record(mesh.index, &status.record, domain, &taken);
+                    builder.add_record(mesh.index, &status.record, domain, zones, &taken);
                 }
             }
 
             for peer in &mesh.netmap.peers {
                 let taken = mesh.peer_taken(peer);
                 let addresses = mesh.peer_addresses(&peer.key);
-                builder.add_host(mesh.index, &peer.hostname, addresses, domain);
+
+                if zones.contains(domain) {
+                    builder.add_host(mesh.index, &peer.hostname, addresses, domain);
+                }
 
                 for record in &peer.records {
-                    builder.add_record(mesh.index, record, domain, &taken);
+                    builder.add_record(mesh.index, record, domain, zones, &taken);
                 }
             }
         }
@@ -141,8 +147,19 @@ impl Builder {
         }
     }
 
-    fn add_record(&mut self, mesh: usize, record: &DnsRecord, domain: &DnsName, taken: &[IpAddr]) {
-        let Some(name) = in_domain(&record.name, domain) else {
+    fn add_record(
+        &mut self,
+        mesh: usize,
+        record: &DnsRecord,
+        domain: &DnsName,
+        zones: &[DnsName],
+        taken: &[IpAddr],
+    ) {
+        if !zones.contains(record.zone.as_ref().unwrap_or(domain)) {
+            return;
+        }
+
+        let Some(name) = record.fqdn(domain).ok().as_ref().and_then(absolute) else {
             return;
         };
 

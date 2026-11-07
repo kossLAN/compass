@@ -13,8 +13,8 @@ pub use api::{
     PROTOCOL_VERSION, RegisterRequest, RegisterResponse,
 };
 pub use dns::{
-    CnameTarget, DNS_PORT, DnsError, DnsName, DnsRecord, MAX_LABEL_LEN, MAX_NAME_LEN, RecordData,
-    RecordKind,
+    APEX, CnameTarget, DNS_PORT, DnsError, DnsName, DnsRecord, MAX_LABEL_LEN, MAX_NAME_LEN,
+    RecordData, RecordKind,
 };
 pub use ipc::{
     ExitNodeChoice, ExitNodeStatus, IpcRequest, IpcResponse, LighthouseState, LighthouseStatus,

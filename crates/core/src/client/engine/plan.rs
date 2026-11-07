@@ -70,17 +70,21 @@ pub fn build(inputs: &Inputs<'_>) -> Plan {
         .collect();
 
     let exit = inputs.exit_node.map(|exit_node| {
-        let granted = view.meshes.iter().find_map(|mesh| {
-            mesh.netmap
-                .peers
-                .iter()
-                .find(|peer| {
-                    peer.exit_node
-                        && peer.hostname == exit_node.peer
-                        && inputs.direct.contains_key(&peer.key)
-                })
-                .map(|peer| (peer.key, mesh.addresses.clone()))
-        });
+        let granted = view
+            .meshes
+            .iter()
+            .filter(|mesh| exit_node.mesh.is_none_or(|index| index == mesh.index))
+            .find_map(|mesh| {
+                mesh.netmap
+                    .peers
+                    .iter()
+                    .find(|peer| {
+                        peer.exit_node
+                            && peer.hostname == exit_node.peer
+                            && inputs.direct.contains_key(&peer.key)
+                    })
+                    .map(|peer| (peer.key, mesh.addresses.clone()))
+            });
         let (peer, sources) =
             granted.map_or((None, Vec::new()), |(key, sources)| (Some(key), sources));
         ExitPlan {

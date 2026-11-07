@@ -28,6 +28,10 @@ in
       network = {
         # Peers resolve each other as <hostname>.mesh.internal.
         domain = "mesh.internal";
+        # More zones the mesh answers for. Nodes publish records in them as their key's `dns`
+        # patterns allow, and clients answer every other name in them with NXDOMAIN. Unlike
+        # the rest of this section, zones can change on reload.
+        zones = [ "home.arpa" ];
         # Both are required: every node gets one address from each. Tailscale uses these
         # ranges too; pick others on hosts that also run it.
         ipv4 = "100.64.0.0/10";
@@ -54,12 +58,16 @@ in
       # Pre-auth keys. Each secret_file holds a secret created with `bunnyhop authkey`; clients
       # present the same secret. Removing a key removes its nodes.
       keys = {
-        # Alice's devices. Besides <hostname> and *.<hostname>, they may claim *.alice.
+        # Alice's devices. Besides <hostname> and *.<hostname>, they may claim *.alice, and
+        # names in the home.arpa zone. Names are under the mesh domain unless they end in a dot.
         laptops = {
           secret_file = "/run/secrets/bunnyhop-laptops";
           owner = "alice";
           tags = [ "tag:laptop" ];
-          dns = [ "*.alice" ];
+          dns = [
+            "*.alice"
+            "*.home.arpa."
+          ];
         };
         # CI runners without key files: every run is a new node. Each logs out when it ends,
         # and one that crashes is removed after 10 minutes offline.

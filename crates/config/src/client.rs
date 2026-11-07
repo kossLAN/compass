@@ -24,16 +24,14 @@ pub struct ClientConfig {
     pub private_key_file: Option<PathBuf>,
     #[serde(default)]
     pub interface: InterfaceConfig,
-    #[serde(default)]
-    pub dns: DnsConfig,
-    #[serde(default)]
-    pub exit_node: ExitNodeConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LighthouseEntry {
     pub url: Url,
     pub auth_key_file: Option<PathBuf>,
+    pub dns: DnsConfig,
+    pub exit_node: ExitNodeConfig,
 }
 
 #[derive(Deserialize)]
@@ -41,6 +39,10 @@ pub struct LighthouseEntry {
 struct RawLighthouseEntry {
     url: Url,
     auth_key_file: Option<PathBuf>,
+    #[serde(default)]
+    dns: DnsConfig,
+    #[serde(default)]
+    exit_node: ExitNodeConfig,
 }
 
 impl<'de> Deserialize<'de> for LighthouseEntry {
@@ -54,7 +56,9 @@ impl<'de> Deserialize<'de> for LighthouseEntry {
             type Value = LighthouseEntry;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a lighthouse URL or a table with url and auth_key_file")
+                formatter.write_str(
+                    "a lighthouse URL or a table with url, auth_key_file, dns and exit_node",
+                )
             }
 
             fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
@@ -65,6 +69,8 @@ impl<'de> Deserialize<'de> for LighthouseEntry {
                 Ok(LighthouseEntry {
                     url,
                     auth_key_file: None,
+                    dns: DnsConfig::default(),
+                    exit_node: ExitNodeConfig::default(),
                 })
             }
 
@@ -76,6 +82,8 @@ impl<'de> Deserialize<'de> for LighthouseEntry {
                 Ok(LighthouseEntry {
                     url: raw.url,
                     auth_key_file: raw.auth_key_file,
+                    dns: raw.dns,
+                    exit_node: raw.exit_node,
                 })
             }
         }
@@ -92,10 +100,11 @@ pub struct InterfaceConfig {
     pub exclude: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// Settings left unset take their default, unless another lighthouse of the same mesh sets them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DnsConfig {
-    pub accept: bool,
+    pub accept: Option<bool>,
     pub records: Vec<DnsRecord>,
 }
 
@@ -103,7 +112,7 @@ pub struct DnsConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct ExitNodeConfig {
     pub peer: Option<DnsName>,
-    pub advertise: bool,
+    pub advertise: Option<bool>,
 }
 
 impl Default for InterfaceConfig {
@@ -114,15 +123,6 @@ impl Default for InterfaceConfig {
             exclude: ["docker*", "br-*", "veth*", "virbr*"]
                 .map(str::to_owned)
                 .to_vec(),
-        }
-    }
-}
-
-impl Default for DnsConfig {
-    fn default() -> Self {
-        Self {
-            accept: true,
-            records: Vec::new(),
         }
     }
 }
@@ -142,13 +142,6 @@ impl ClientConfig {
             ));
         }
 
-        if self.dns.records.len() > MAX_RECORDS {
-            return Err(ConfigError::invalid(
-                "client.dns.records",
-                format!("at most {MAX_RECORDS} records are allowed"),
-            ));
-        }
-
         self.validate_lighthouses()?;
 
         if let Some(hostname) = &self.hostname
@@ -157,15 +150,6 @@ impl ClientConfig {
             return Err(ConfigError::invalid(
                 "client.hostname",
                 "must be a single DNS label",
-            ));
-        }
-
-        if let Some(peer) = &self.exit_node.peer
-            && !peer.is_label()
-        {
-            return Err(ConfigError::invalid(
-                "client.exit_node.peer",
-                "must be a peer's hostname",
             ));
         }
 
@@ -194,6 +178,22 @@ impl ClientConfig {
 
         for entry in &self.lighthouses {
             let lighthouse = &entry.url;
+
+            if entry.dns.records.len() > MAX_RECORDS {
+                return Err(ConfigError::invalid(
+                    field,
+                    format!("\"{lighthouse}\" lists more than {MAX_RECORDS} records"),
+                ));
+            }
+
+            if let Some(peer) = &entry.exit_node.peer
+                && !peer.is_label()
+            {
+                return Err(ConfigError::invalid(
+                    field,
+                    format!("\"{lighthouse}\" has an exit_node.peer that is not a peer's hostname"),
+                ));
+            }
 
             if self.auth_key_file_for(entry).is_none() {
                 return Err(ConfigError::invalid(

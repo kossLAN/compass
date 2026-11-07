@@ -50,6 +50,7 @@ pub const MESH_RANGE_V6: Ipv6Net =
     Ipv6Net::new_assert(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 0), 7);
 pub const MIN_MTU: u16 = 1280;
 pub const MAX_MTU: u16 = 9000;
+const REVERSE_ROOTS: [&str; 2] = ["in-addr.arpa", "ip6.arpa"];
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NetMapError {
@@ -63,11 +64,15 @@ pub enum NetMapError {
     Domain(DnsName),
     #[error("MTU {0} is outside {MIN_MTU} to {MAX_MTU}")]
     Mtu(u16),
+    #[error("zone \"{0}\" overlaps \"{1}\"")]
+    Zone(DnsName, DnsName),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Network {
     pub domain: DnsName,
+    #[serde(default)]
+    pub zones: Vec<DnsName>,
     pub ipv4: Ipv4Net,
     pub ipv6: Ipv6Net,
     pub mtu: u16,
@@ -89,6 +94,19 @@ impl Network {
 
         if self.domain.is_label() {
             return Err(NetMapError::Domain(self.domain.clone()));
+        }
+
+        let reverse: [DnsName; 2] =
+            REVERSE_ROOTS.map(|root| root.parse().expect("reverse roots are valid DNS names"));
+        let mut served: Vec<&DnsName> = vec![&self.domain];
+        served.extend(&reverse);
+
+        for zone in &self.zones {
+            if let Some(other) = served.iter().find(|other| zone.overlaps(other)) {
+                return Err(NetMapError::Zone(zone.clone(), (*other).clone()));
+            }
+
+            served.push(zone);
         }
 
         Ok(())
@@ -122,6 +140,7 @@ pub enum RejectReason {
     InvalidValue,
     Reserved,
     TooLong,
+    UnknownZone,
 }
 
 impl fmt::Display for RejectReason {
@@ -133,7 +152,8 @@ impl fmt::Display for RejectReason {
             Self::CnameConflict => "a CNAME cannot coexist with other records",
             Self::InvalidValue => "points at a mesh address the node does not own",
             Self::Reserved => "hostnames only carry their automatic records",
-            Self::TooLong => "too long together with the mesh domain",
+            Self::TooLong => "too long together with its zone",
+            Self::UnknownZone => "the mesh does not serve this zone",
         })
     }
 }

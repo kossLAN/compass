@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_NAME_LEN: usize = 253;
 pub const MAX_LABEL_LEN: usize = 63;
 pub const DNS_PORT: u16 = 53;
+pub const APEX: &str = "@";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DnsError {
@@ -39,6 +40,15 @@ impl DnsName {
 
     pub fn is_at_or_under(&self, parent: &Self) -> bool {
         self == parent || self.is_under(parent)
+    }
+
+    pub fn overlaps(&self, other: &Self) -> bool {
+        self.is_at_or_under(other) || other.is_at_or_under(self)
+    }
+
+    pub fn relative_to(&self, parent: &Self) -> Option<Self> {
+        let prefix = self.0.strip_suffix(parent.as_str())?.strip_suffix('.')?;
+        Some(Self(prefix.to_owned()))
     }
 
     pub fn last_label(&self) -> &str {
@@ -258,7 +268,10 @@ impl fmt::Display for RecordData {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "RecordRepr", into = "RecordRepr")]
 pub struct DnsRecord {
-    pub name: DnsName,
+    /// `None` is the mesh domain.
+    pub zone: Option<DnsName>,
+    /// `None` is the zone's apex.
+    pub name: Option<DnsName>,
     pub data: RecordData,
 }
 
@@ -266,12 +279,30 @@ impl DnsRecord {
     pub const fn kind(&self) -> RecordKind {
         self.data.kind()
     }
+
+    pub fn fqdn(&self, domain: &DnsName) -> Result<DnsName, DnsError> {
+        let zone = self.zone.as_ref().unwrap_or(domain);
+        self.name
+            .as_ref()
+            .map_or_else(|| Ok(zone.clone()), |name| name.join(zone))
+    }
+
+    pub fn owner(&self) -> String {
+        match (&self.zone, &self.name) {
+            (None, Some(name)) => name.to_string(),
+            (None, None) => APEX.to_owned(),
+            (Some(zone), Some(name)) => format!("{name}.{zone}."),
+            (Some(zone), None) => format!("{zone}."),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RecordRepr {
-    name: DnsName,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    zone: Option<DnsName>,
+    name: String,
     #[serde(rename = "type")]
     kind: RecordKind,
     value: String,
@@ -281,9 +312,14 @@ impl TryFrom<RecordRepr> for DnsRecord {
     type Error = DnsError;
 
     fn try_from(repr: RecordRepr) -> Result<Self, Self::Error> {
+        let name = match repr.name.trim() {
+            APEX => None,
+            name => Some(name.parse()?),
+        };
         let data = RecordData::parse(repr.kind, &repr.value)?;
         Ok(Self {
-            name: repr.name,
+            zone: repr.zone,
+            name,
             data,
         })
     }
@@ -294,7 +330,8 @@ impl From<DnsRecord> for RecordRepr {
         Self {
             kind: record.kind(),
             value: record.data.to_string(),
-            name: record.name,
+            name: record.name.map_or_else(|| APEX.to_owned(), String::from),
+            zone: record.zone,
         }
     }
 }

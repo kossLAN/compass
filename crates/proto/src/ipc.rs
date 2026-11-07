@@ -109,5 +109,7 @@ pub struct PeerStatus {
 pub struct RecordEntry {
     pub record: DnsRecord,
     pub mesh: Option<DnsName>,
+    #[serde(default)]
+    pub lighthouses: Vec<Url>,
     pub state: Option<RecordState>,
 }

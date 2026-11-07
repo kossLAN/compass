@@ -5,10 +5,11 @@ pub use self::raw::RawLighthouseConfig;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::time::Duration;
 
-use bunnyhop_proto::{DnsName, MAX_LABEL_LEN, MAX_NAME_LEN, Network, PublicKey, SecretHash};
+use bunnyhop_proto::{
+    DnsError, DnsName, MAX_LABEL_LEN, MAX_NAME_LEN, Network, PublicKey, SecretHash,
+};
 use jiff::{Span, SpanRelativeTo};
 
 use self::raw::{RawApi, RawHub, RawKey, RawNetwork, RawNodes};
@@ -72,13 +73,21 @@ pub enum NamePattern {
 
 impl LighthouseConfig {
     pub fn startup_setting_changed(&self, new: &Self) -> Option<&'static str> {
+        let without_zones = |network: &Network| Network {
+            zones: Vec::new(),
+            ..network.clone()
+        };
+
         [
             ("lighthouse.api.listen", self.api.listen != new.api.listen),
             (
                 "lighthouse.api.tls_cert_file",
                 self.api.tls.is_some() != new.api.tls.is_some(),
             ),
-            ("lighthouse.network", self.network != new.network),
+            (
+                "lighthouse.network",
+                without_zones(&self.network) != without_zones(&new.network),
+            ),
             (
                 "lighthouse.hub.listen_port",
                 self.hub.listen_port != new.hub.listen_port,
@@ -95,11 +104,12 @@ impl LighthouseConfig {
     pub(crate) fn from_raw(raw: RawLighthouseConfig) -> Result<Self, ConfigError> {
         let default_ttl = parse_ttl("lighthouse.nodes.offline_ttl", &raw.nodes.offline_ttl)?;
         let nodes = NodesConfig::from_raw(raw.nodes);
+        let network = network_from_raw(raw.network)?;
         let keys = raw
             .keys
             .into_iter()
             .map(|(name, key)| {
-                let key = KeyConfig::from_raw(&name, key, default_ttl)?;
+                let key = KeyConfig::from_raw(&name, key, default_ttl, &network.domain)?;
                 Ok((name, key))
             })
             .collect::<Result<BTreeMap<_, _>, ConfigError>>()?;
@@ -107,7 +117,7 @@ impl LighthouseConfig {
 
         Ok(Self {
             api: ApiConfig::from_raw(raw.api)?,
-            network: network_from_raw(raw.network)?,
+            network,
             hub: HubConfig::from_raw(raw.hub)?,
             nodes,
             keys,
@@ -194,6 +204,7 @@ fn network_from_raw(raw: RawNetwork) -> Result<Network, ConfigError> {
 
     let network = Network {
         domain: raw.domain,
+        zones: raw.zones,
         ipv4: raw.ipv4.trunc(),
         ipv6: raw.ipv6.trunc(),
         mtu: raw.mtu,
@@ -256,7 +267,12 @@ fn parse_ttl(field: impl Into<String>, raw: &str) -> Result<Duration, ConfigErro
 }
 
 impl KeyConfig {
-    fn from_raw(name: &str, raw: RawKey, default_ttl: Duration) -> Result<Self, ConfigError> {
+    fn from_raw(
+        name: &str,
+        raw: RawKey,
+        default_ttl: Duration,
+        domain: &DnsName,
+    ) -> Result<Self, ConfigError> {
         let field = |suffix: &str| format!("lighthouse.keys.{name}{suffix}");
         let valid_name = name
             .bytes()
@@ -290,7 +306,7 @@ impl KeyConfig {
         let dns = raw
             .dns
             .iter()
-            .map(|pattern| pattern.parse())
+            .map(|pattern| NamePattern::parse(pattern, domain))
             .collect::<Result<_, _>>()
             .map_err(|error| ConfigError::invalid(field(".dns"), format!("{error}")))?;
 
@@ -322,18 +338,27 @@ impl NamePattern {
             Self::Below(parent) => name.is_under(parent),
         }
     }
-}
 
-impl FromStr for NamePattern {
-    type Err = bunnyhop_proto::DnsError;
+    /// Patterns with a trailing dot are absolute; the rest are relative to `domain`.
+    pub fn parse(pattern: &str, domain: &DnsName) -> Result<Self, DnsError> {
+        let pattern = pattern.trim();
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.trim() {
-            "*" => Ok(Self::Any),
-            s => s.strip_prefix("*.").map_or_else(
-                || s.parse().map(Self::Exact),
-                |parent| parent.parse().map(Self::Below),
-            ),
+        if pattern == "*" {
+            return Ok(Self::Any);
         }
+
+        let (below, name) = pattern
+            .strip_prefix("*.")
+            .map_or((false, pattern), |parent| (true, parent));
+        let name = match name.strip_suffix('.') {
+            Some(absolute) => absolute.parse()?,
+            None => name.parse::<DnsName>()?.join(domain)?,
+        };
+
+        Ok(if below {
+            Self::Below(name)
+        } else {
+            Self::Exact(name)
+        })
     }
 }
