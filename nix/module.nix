@@ -43,7 +43,10 @@ in
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
-      path = lib.optional resolvconf config.networking.resolvconf.package;
+      path = [
+        config.networking.firewall.package
+      ]
+      ++ lib.optional resolvconf config.networking.resolvconf.package;
       serviceConfig = {
         Type = "notify";
         ExecStart = "${lib.getExe' cfg.package "compassd"} --config ${toml.generate "compassd.toml" cfg.settings}";
@@ -71,9 +74,12 @@ in
       };
     };
 
-    environment.systemPackages = [ cfg.package ];
-    environment.variables = lib.mkIf (cfg.settings ? socket.path) {
-      COMPASS_SOCKET = cfg.settings.socket.path;
+    environment = {
+      systemPackages = [ cfg.package ];
+
+      variables = lib.mkIf (cfg.settings ? socket.path) {
+        COMPASS_SOCKET = cfg.settings.socket.path;
+      };
     };
 
     boot.kernel.sysctl = lib.mkIf (client.exit_node.advertise or false) {
