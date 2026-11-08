@@ -3,8 +3,8 @@ mod names;
 
 use std::collections::BTreeMap;
 
-use bunnyhop_config::LighthouseConfig;
-use bunnyhop_proto::{
+use compass_config::LighthouseConfig;
+use compass_proto::{
     Addresses, DnsName, MAX_AVOID, MAX_RECORDS, NodeId, NodeInfo, PublicKey, RegisterRequest,
     SecretHash, Token,
 };

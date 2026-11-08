@@ -6,21 +6,21 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Context as _;
-use bunnyhop_config::DaemonConfig;
 use clap::{Parser, Subcommand};
+use compass_config::DaemonConfig;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
-    name = "bunnyhopd",
+    name = "compassd",
     version,
-    about = "The bunnyhop daemon: a mesh client, a lighthouse, or both"
+    about = "The compass daemon: a mesh client, a lighthouse, or both"
 )]
 struct Cli {
     #[arg(
         short,
         long,
-        default_value = "/etc/bunnyhop/bunnyhopd.toml",
+        default_value = "/etc/compass/compassd.toml",
         help = "The config file to run with"
     )]
     config: PathBuf,
@@ -31,7 +31,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    #[command(about = "Validate bunnyhopd.toml and exit")]
+    #[command(about = "Validate compassd.toml and exit")]
     CheckConfig {
         #[arg(help = "Defaults to --config")]
         path: Option<PathBuf>,

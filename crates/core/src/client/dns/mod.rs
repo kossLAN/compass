@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use bunnyhop_net::{Dataplane, LinkDns};
-use bunnyhop_proto::{DNS_PORT, DnsName};
+use compass_net::{Dataplane, LinkDns};
+use compass_proto::{DNS_PORT, DnsName};
 use hickory_server::proto::rr::Name;
 use ipnet::IpNet;
 use tokio::net::{TcpListener, UdpSocket};

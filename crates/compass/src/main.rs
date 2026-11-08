@@ -6,23 +6,23 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use crate::control::Control;
-use bunnyhop_config::DEFAULT_SOCKET;
-use bunnyhop_proto::{AuthKey, DnsName, ExitNodeChoice, PrivateKey};
 use clap::{Args, Parser, Subcommand};
+use compass_config::DEFAULT_SOCKET;
+use compass_proto::{AuthKey, DnsName, ExitNodeChoice, PrivateKey};
 
 #[derive(Parser)]
 #[command(
-    name = "bunnyhop",
+    name = "compass",
     version,
-    about = "Control bunnyhopd and manage bunnyhop keys"
+    about = "Control compassd and manage compass keys"
 )]
 struct Cli {
     #[arg(
         long,
         global = true,
-        env = "BUNNYHOP_SOCKET",
+        env = "COMPASS_SOCKET",
         default_value = DEFAULT_SOCKET,
-        help = "bunnyhopd's control socket"
+        help = "compassd's control socket"
     )]
     socket: PathBuf,
 
@@ -42,7 +42,7 @@ enum Command {
         #[command(flatten)]
         output: Output,
     },
-    #[command(about = "Change the exit node until bunnyhopd restarts or reloads")]
+    #[command(about = "Change the exit node until compassd restarts or reloads")]
     ExitNode {
         #[command(subcommand)]
         command: ExitNodeCommand,

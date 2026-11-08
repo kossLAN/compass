@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use bunnyhop_config::LighthouseConfig;
-use bunnyhop_config::acl::{Compiled, Subject, compile};
-use bunnyhop_proto::{
+use compass_config::LighthouseConfig;
+use compass_config::acl::{Compiled, Subject, compile};
+use compass_proto::{
     HubInfo, NetMap, NetMapResponse, NodeId, Peer, PublicKey, SecretHash, SelfNode, Token,
 };
 use sha2::{Digest as _, Sha256};

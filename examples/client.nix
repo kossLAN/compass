@@ -1,21 +1,21 @@
 # A mesh client as a NixOS module. Import it next to the flake's module:
 #
-#   modules = [ bunnyhop.nixosModules.default ./client.nix ];
+#   modules = [ compass.nixosModules.default ./client.nix ];
 #
-# `settings` is bunnyhopd.toml; see bunnyhopd.toml next to this file for every option. A node
+# `settings` is compassd.toml; see compassd.toml next to this file for every option. A node
 # that is also a lighthouse adds `settings.lighthouse` (see lighthouse.nix). Secrets are given
 # as plain paths; with agenix or sops-nix, use their `.path` instead.
 {
-  services.bunnyhop = {
+  services.compass = {
     enable = true;
     # Opens the client's listen port (UDP) so peers can connect directly.
     openFirewall = true;
 
     settings = {
-      # Where `bunnyhop status` and `bunnyhop dns` reach the daemon. The module points the CLI
-      # at it; keep it under /run/bunnyhop, the only directory the service may write.
+      # Where `compass status` and `compass dns` reach the daemon. The module points the CLI
+      # at it; keep it under /run/compass, the only directory the service may write.
       socket = {
-        path = "/run/bunnyhop/bunnyhop.sock";
+        path = "/run/compass/compass.sock";
         # Members may use the CLI without root.
         group = "wheel";
       };
@@ -81,7 +81,7 @@
             exit_node = {
               # Send internet traffic through this peer of the mesh while a direct path to it
               # is up; without one the traffic is blocked. Only one mesh can set it.
-              # `bunnyhop exit-node` overrides this until a restart.
+              # `compass exit-node` overrides this until a restart.
               peer = "web";
               # Offer this node as an exit node in the mesh; its pre-auth key needs
               # `exit_node = true`.
@@ -94,16 +94,16 @@
           # zone or domain, this node keeps the one whose lighthouse is listed first.
           {
             url = "https://lh.work.example:8443";
-            auth_key_file = "/run/secrets/bunnyhop-work";
+            auth_key_file = "/run/secrets/compass-work";
             dns.accept = false;
           }
         ];
         # The same secret as the lighthouses' keys.laptops.secret_file.
-        auth_key_file = "/run/secrets/bunnyhop-laptops";
+        auth_key_file = "/run/secrets/compass-laptops";
         # Defaults to the system hostname.
         hostname = "laptop";
         # Only needed when the lighthouses' certificate is not from a public CA.
-        ca_file = "/etc/bunnyhop/ca.pem";
+        ca_file = "/etc/compass/ca.pem";
 
         interface = {
           # The node's only WireGuard interface, for direct and relayed peers alike.
@@ -120,9 +120,9 @@
           ];
         };
 
-        # The node's WireGuard key, created with `bunnyhop genkey`. Without it the node gets a
+        # The node's WireGuard key, created with `compass genkey`. Without it the node gets a
         # new identity on every start, which calls for a pre-auth key with a short offline_ttl.
-        private_key_file = "/run/secrets/bunnyhop-node.key";
+        private_key_file = "/run/secrets/compass-node.key";
       };
     };
   };

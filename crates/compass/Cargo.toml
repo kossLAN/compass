@@ -1,6 +1,6 @@
 [package]
-name = "bunnyhop"
-description = "Control bunnyhopd and make bunnyhop keys"
+name = "compass"
+description = "Control compassd and make compass keys"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,8 +9,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-bunnyhop-config.workspace = true
-bunnyhop-proto.workspace = true
+compass-config.workspace = true
+compass-proto.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true

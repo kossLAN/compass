@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use bunnyhop_proto::{PortRange, Proto};
+use compass_proto::{PortRange, Proto};
 use serde::Deserialize;
 
 use crate::acl::selector::validate_name;

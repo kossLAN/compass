@@ -1,6 +1,6 @@
 # A lighthouse as a NixOS module. Import it next to the flake's module:
 #
-#   modules = [ bunnyhop.nixosModules.default ./lighthouse.nix ];
+#   modules = [ compass.nixosModules.default ./lighthouse.nix ];
 #
 # Run as many lighthouses as you like: they keep no state, so every one runs this same
 # section, apart from the hub's endpoint and key, and clients register with all of them. To
@@ -12,7 +12,7 @@ let
   certs = config.security.acme.certs.${domain}.directory;
 in
 {
-  services.bunnyhop = {
+  services.compass = {
     enable = true;
     # Opens the API's TCP port, which also carries relayed traffic, and the hub's UDP port.
     openFirewall = true;
@@ -44,24 +44,24 @@ in
         listen_port = 51820;
         # How clients reach this port.
         endpoint = "${domain}:51820";
-        # Created with `bunnyhop genkey`; when unset, a new key is generated on each start.
-        private_key_file = "/run/secrets/bunnyhop-hub.key";
+        # Created with `compass genkey`; when unset, a new key is generated on each start.
+        private_key_file = "/run/secrets/compass-hub.key";
       };
 
       nodes = {
         # Every node is removed once it has been offline this long; a key can override it.
         offline_ttl = "30d";
-        # Public keys (shown by `bunnyhop status`) that may never register again.
+        # Public keys (shown by `compass status`) that may never register again.
         revoked = [ "0D5zlRK6XORev2ICQb4hDebYYTP8edb4T0dPGDifChE=" ];
       };
 
-      # Pre-auth keys. Each secret_file holds a secret created with `bunnyhop authkey`; clients
+      # Pre-auth keys. Each secret_file holds a secret created with `compass authkey`; clients
       # present the same secret. Removing a key removes its nodes.
       keys = {
         # Alice's devices. Besides <hostname> and *.<hostname>, they may claim *.alice, and
         # names in the home.arpa zone. Names are under the mesh domain unless they end in a dot.
         laptops = {
-          secret_file = "/run/secrets/bunnyhop-laptops";
+          secret_file = "/run/secrets/compass-laptops";
           owner = "alice";
           tags = [ "tag:laptop" ];
           dns = [
@@ -72,13 +72,13 @@ in
         # CI runners without key files: every run is a new node. Each logs out when it ends,
         # and one that crashes is removed after 10 minutes offline.
         ci = {
-          secret_file = "/run/secrets/bunnyhop-ci";
+          secret_file = "/run/secrets/compass-ci";
           tags = [ "tag:ci" ];
           offline_ttl = "10m";
         };
         # A web server that may also claim the name "status" and act as an exit node.
         web = {
-          secret_file = "/run/secrets/bunnyhop-web";
+          secret_file = "/run/secrets/compass-web";
           tags = [ "tag:web" ];
           dns = [ "status" ];
           exit_node = true;
@@ -135,5 +135,5 @@ in
   };
 
   # Reload the lighthouse when the API certificate is renewed.
-  security.acme.certs.${domain}.reloadServices = [ "bunnyhopd" ];
+  security.acme.certs.${domain}.reloadServices = [ "compassd" ];
 }

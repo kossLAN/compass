@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use bunnyhop_proto::{Addresses, Network, NodeId, PublicKey};
+use compass_proto::{Addresses, Network, NodeId, PublicKey};
 use ipnet::{Ipv4Net, Ipv6Net};
 
 use super::Registration;

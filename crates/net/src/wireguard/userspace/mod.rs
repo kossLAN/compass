@@ -14,7 +14,7 @@ use arc_swap::ArcSwap;
 use boringtun::noise::TunnResult;
 use boringtun::noise::rate_limiter::RateLimiter;
 use boringtun::x25519::{PublicKey as X25519PublicKey, StaticSecret};
-use bunnyhop_proto::PublicKey;
+use compass_proto::PublicKey;
 use ipnet::IpNet;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;

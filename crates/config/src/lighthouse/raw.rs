@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use bunnyhop_proto::{DnsName, MIN_MTU, PublicKey};
+use compass_proto::{DnsName, MIN_MTU, PublicKey};
 use ipnet::{Ipv4Net, Ipv6Net};
 use serde::Deserialize;
 

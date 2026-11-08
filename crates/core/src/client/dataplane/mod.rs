@@ -5,11 +5,11 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use bunnyhop_config::InterfaceConfig;
-use bunnyhop_net::{
+use compass_config::InterfaceConfig;
+use compass_net::{
     Dataplane, DeviceSpec, Firewall, MeshRules, NetError, NodeRules, RuleSpec, Stun, Wireguard,
 };
-use bunnyhop_proto::{NodeId, PacketRule, PrivateKey, PublicKey};
+use compass_proto::{NodeId, PacketRule, PrivateKey, PublicKey};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 
 use self::linux::Linux;

@@ -6,7 +6,7 @@ self:
   ...
 }:
 let
-  cfg = config.services.bunnyhop;
+  cfg = config.services.compass;
   toml = pkgs.formats.toml { };
 
   client = cfg.settings.client or null;
@@ -18,17 +18,17 @@ let
   resolvconfExe = lib.getExe' config.networking.resolvconf.package "resolvconf";
 in
 {
-  options.services.bunnyhop = {
-    enable = lib.mkEnableOption "bunnyhopd, the bunnyhop mesh client and lighthouse";
+  options.services.compass = {
+    enable = lib.mkEnableOption "compassd, the compass mesh client and lighthouse";
     package = lib.mkOption {
       type = lib.types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.bunnyhop;
-      description = "The bunnyhop package, with bunnyhopd and the bunnyhop CLI.";
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.compass;
+      description = "The compass package, with compassd and the compass CLI.";
     };
     settings = lib.mkOption {
       inherit (toml) type;
       default = { };
-      description = "Contents of bunnyhopd.toml: a `client` section, a `lighthouse` section, or both.";
+      description = "Contents of compassd.toml: a `client` section, a `lighthouse` section, or both.";
     };
     openFirewall = lib.mkOption {
       type = lib.types.bool;
@@ -38,15 +38,15 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    systemd.services.bunnyhopd = {
-      description = "bunnyhop daemon";
+    systemd.services.compassd = {
+      description = "compass daemon";
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
       path = lib.optional resolvconf config.networking.resolvconf.package;
       serviceConfig = {
         Type = "notify";
-        ExecStart = "${lib.getExe' cfg.package "bunnyhopd"} --config ${toml.generate "bunnyhopd.toml" cfg.settings}";
+        ExecStart = "${lib.getExe' cfg.package "compassd"} --config ${toml.generate "compassd.toml" cfg.settings}";
         ExecReload = "${lib.getExe' pkgs.coreutils "kill"} -HUP $MAINPID";
         ExecStopPost = lib.mkIf (
           resolvconf && client != null
@@ -56,7 +56,7 @@ in
           "-/run/resolvconf"
         ];
         Restart = "on-failure";
-        RuntimeDirectory = "bunnyhop";
+        RuntimeDirectory = "compass";
         CapabilityBoundingSet = [
           "CAP_NET_ADMIN"
           "CAP_NET_BIND_SERVICE"
@@ -73,7 +73,7 @@ in
 
     environment.systemPackages = [ cfg.package ];
     environment.variables = lib.mkIf (cfg.settings ? socket.path) {
-      BUNNYHOP_SOCKET = cfg.settings.socket.path;
+      COMPASS_SOCKET = cfg.settings.socket.path;
     };
 
     boot.kernel.sysctl = lib.mkIf (client.exit_node.advertise or false) {

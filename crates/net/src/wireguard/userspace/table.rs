@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use boringtun::noise::rate_limiter::RateLimiter;
 use boringtun::noise::{Tunn, TunnResult};
 use boringtun::x25519::{PublicKey as X25519PublicKey, StaticSecret};
-use bunnyhop_proto::PublicKey;
+use compass_proto::PublicKey;
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use prefix_trie::PrefixMap;
 

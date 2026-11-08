@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::SystemTime;
 
-use bunnyhop_proto::{PrivateKey, PublicKey};
+use compass_proto::{PrivateKey, PublicKey};
 use ipnet::IpNet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

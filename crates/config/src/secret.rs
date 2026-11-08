@@ -2,7 +2,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
-use bunnyhop_proto::PrivateKey;
+use compass_proto::PrivateKey;
 use zeroize::Zeroizing;
 
 use crate::ConfigError;

@@ -3,7 +3,7 @@ use std::fmt;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
-use bunnyhop_proto::{AuthKey, DnsName, DnsRecord, MAX_RECORDS};
+use compass_proto::{AuthKey, DnsName, DnsRecord, MAX_RECORDS};
 use serde::de::value::MapAccessDeserializer;
 use serde::{Deserialize, Deserializer, de};
 use url::{Host, Url};

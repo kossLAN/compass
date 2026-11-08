@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 
-use bunnyhop_proto::{CnameTarget, DnsName, DnsRecord, RecordData, RecordState};
+use compass_proto::{CnameTarget, DnsName, DnsRecord, RecordData, RecordState};
 use hickory_server::proto::rr::rdata::{A, AAAA, CNAME, PTR};
 use hickory_server::proto::rr::{LowerName, Name, RData, Record, RecordType};
 

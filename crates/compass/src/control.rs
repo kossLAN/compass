@@ -1,7 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use bunnyhop_proto::{
+use compass_proto::{
     ExitNodeChoice, IpcRequest, IpcResponse, MAX_IPC_LINE, RecordEntry, StatusReport,
 };
 use futures_util::{SinkExt as _, StreamExt as _};
@@ -10,17 +10,17 @@ use tokio_util::codec::{Framed, LinesCodec, LinesCodecError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ControlError {
-    #[error("connecting to bunnyhopd at {}: {error} (is it running?)", socket.display())]
+    #[error("connecting to compassd at {}: {error} (is it running?)", socket.display())]
     Connect { socket: PathBuf, error: io::Error },
-    #[error("talking to bunnyhopd: {0}")]
+    #[error("talking to compassd: {0}")]
     Transport(LinesCodecError),
-    #[error("bunnyhopd closed the connection")]
+    #[error("compassd closed the connection")]
     Closed,
-    #[error("bunnyhopd sent an invalid response: {0}")]
+    #[error("compassd sent an invalid response: {0}")]
     Invalid(serde_json::Error),
     #[error("{0}")]
     Failed(String),
-    #[error("bunnyhopd sent an unexpected response")]
+    #[error("compassd sent an unexpected response")]
     Unexpected,
 }
 

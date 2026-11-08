@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::net::IpAddr;
 
-use bunnyhop_proto::{MAX_AVOID, NetMap, NodeId, Peer, PublicKey};
+use compass_proto::{MAX_AVOID, NetMap, NodeId, Peer, PublicKey};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mesh {

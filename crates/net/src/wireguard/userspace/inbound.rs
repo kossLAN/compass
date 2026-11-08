@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use boringtun::noise::handshake::parse_handshake_anon;
 use boringtun::noise::{Packet, Tunn, TunnResult};
-use bunnyhop_proto::PublicKey;
+use compass_proto::PublicKey;
 use tokio::net::UdpSocket;
 use tun_rs::{GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 

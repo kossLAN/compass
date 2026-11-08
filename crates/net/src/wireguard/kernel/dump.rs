@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
-use bunnyhop_proto::PublicKey;
+use compass_proto::PublicKey;
 use ipnet::IpNet;
 use netlink_packet_wireguard::{
     WireguardAllowedIp, WireguardAllowedIpAttr, WireguardAttribute, WireguardMessage,

@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use bunnyhop_proto::{CandidateKind, IceCandidate, MAX_CANDIDATES};
+use compass_proto::{CandidateKind, IceCandidate, MAX_CANDIDATES};
 use ipnet::IpNet;
 use rtc_ice::candidate::candidate_host::CandidateHostConfig;
 use rtc_ice::candidate::candidate_server_reflexive::CandidateServerReflexiveConfig;

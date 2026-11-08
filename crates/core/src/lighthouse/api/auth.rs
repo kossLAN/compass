@@ -2,7 +2,7 @@ use axum::extract::FromRequestParts;
 use axum::http::HeaderMap;
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
-use bunnyhop_proto::{NodeId, Token};
+use compass_proto::{NodeId, Token};
 
 use super::{ApiError, AppState};
 

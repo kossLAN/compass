@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use bunnyhop_proto::{
+use compass_proto::{
     ErrorCode, HubResponse, LONG_POLL, NodeId, NodeInfo, PROTOCOL_VERSION, PrivateKey,
     RegisterRequest, RegisterResponse, SecretHash, SignalBatch, SignalEnvelope,
 };

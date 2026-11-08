@@ -1,6 +1,6 @@
 [package]
-name = "bunnyhop-net"
-description = "Linux kernel and userspace WireGuard, routing, nftables, iptables and resolvconf integration for bunnyhop"
+name = "compass-net"
+description = "Linux kernel and userspace WireGuard, routing, nftables, iptables and resolvconf integration for compass"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-bunnyhop-proto.workspace = true
+compass-proto.workspace = true
 
 arc-swap.workspace = true
 boringtun.workspace = true

@@ -23,7 +23,7 @@ pub use stun::{Datagram, is_stun};
 pub use wireguard::{Stun, Wireguard};
 
 const PROTOCOL: u8 = 82;
-const TABLE: &str = "bunnyhop";
+const TABLE: &str = "compass";
 
 const ENOENT: i32 = 2;
 const ESRCH: i32 = 3;

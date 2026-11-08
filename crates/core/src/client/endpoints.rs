@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv6Addr};
 
-use bunnyhop_net::LocalAddress;
+use compass_net::LocalAddress;
 use ipnet::IpNet;
 
 pub fn local_networks(

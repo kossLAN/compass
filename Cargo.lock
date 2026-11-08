@@ -350,129 +350,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
-name = "bunnyhop"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bunnyhop-config",
- "bunnyhop-proto",
- "clap",
- "futures-util",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "bunnyhop-config"
-version = "0.1.0"
-dependencies = [
- "bunnyhop-proto",
- "ipnet",
- "jiff",
- "serde",
- "thiserror 2.0.21",
- "toml",
- "tracing",
- "url",
- "zeroize",
-]
-
-[[package]]
-name = "bunnyhop-core"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "async-trait",
- "axum",
- "axum-server",
- "bunnyhop-config",
- "bunnyhop-net",
- "bunnyhop-proto",
- "bytes",
- "futures-util",
- "getrandom 0.4.3",
- "governor",
- "hickory-server",
- "hyper",
- "hyper-util",
- "ipnet",
- "reqwest",
- "rtc-ice",
- "rtc-shared",
- "rtc-stun",
- "sansio",
- "serde",
- "serde_json",
- "sha2",
- "socket2",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "bunnyhop-net"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "boringtun",
- "bunnyhop-proto",
- "futures-util",
- "genetlink",
- "ipnet",
- "netlink-packet-core",
- "netlink-packet-generic",
- "netlink-packet-wireguard",
- "nix 0.30.1",
- "prefix-trie",
- "rtnetlink",
- "socket2",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "tun-rs",
-]
-
-[[package]]
-name = "bunnyhop-proto"
-version = "0.1.0"
-dependencies = [
- "base64 0.23.1",
- "bytes",
- "getrandom 0.4.3",
- "hmac 0.13.0",
- "ipnet",
- "serde",
- "sha2",
- "thiserror 2.0.21",
- "url",
- "x25519-dalek 3.0.0",
- "zeroize",
-]
-
-[[package]]
-name = "bunnyhopd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bunnyhop-config",
- "bunnyhop-core",
- "bunnyhop-proto",
- "clap",
- "futures-util",
- "serde_json",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -629,6 +506,129 @@ checksum = "cfc320937d09e6de266b31b9afb480f197d7a861be86be7cb2ea7e5d1bfffc5e"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "compass"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "compass-config",
+ "compass-proto",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "compass-config"
+version = "0.1.0"
+dependencies = [
+ "compass-proto",
+ "ipnet",
+ "jiff",
+ "serde",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
+ "url",
+ "zeroize",
+]
+
+[[package]]
+name = "compass-core"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "axum",
+ "axum-server",
+ "bytes",
+ "compass-config",
+ "compass-net",
+ "compass-proto",
+ "futures-util",
+ "getrandom 0.4.3",
+ "governor",
+ "hickory-server",
+ "hyper",
+ "hyper-util",
+ "ipnet",
+ "reqwest",
+ "rtc-ice",
+ "rtc-shared",
+ "rtc-stun",
+ "sansio",
+ "serde",
+ "serde_json",
+ "sha2",
+ "socket2",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "compass-net"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "boringtun",
+ "compass-proto",
+ "futures-util",
+ "genetlink",
+ "ipnet",
+ "netlink-packet-core",
+ "netlink-packet-generic",
+ "netlink-packet-wireguard",
+ "nix 0.30.1",
+ "prefix-trie",
+ "rtnetlink",
+ "socket2",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tun-rs",
+]
+
+[[package]]
+name = "compass-proto"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "getrandom 0.4.3",
+ "hmac 0.13.0",
+ "ipnet",
+ "serde",
+ "sha2",
+ "thiserror 2.0.21",
+ "url",
+ "x25519-dalek 3.0.0",
+ "zeroize",
+]
+
+[[package]]
+name = "compassd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "compass-config",
+ "compass-core",
+ "compass-proto",
+ "futures-util",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

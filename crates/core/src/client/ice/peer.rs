@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bunnyhop_proto::{CandidateKind, IceCandidate, IceSession, PublicKey, SignalMessage};
+use compass_proto::{CandidateKind, IceCandidate, IceSession, PublicKey, SignalMessage};
 use rtc_ice::agent::agent_config::AgentConfig;
 use rtc_ice::candidate::CandidateType;
 use rtc_ice::crypto::RTCCryptoProvider;

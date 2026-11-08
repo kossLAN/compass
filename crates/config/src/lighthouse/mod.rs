@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use bunnyhop_proto::{
+use compass_proto::{
     DnsError, DnsName, MAX_LABEL_LEN, MAX_NAME_LEN, Network, PublicKey, SecretHash,
 };
 use jiff::{Span, SpanRelativeTo};

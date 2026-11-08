@@ -5,10 +5,10 @@ use std::sync::{Mutex, PoisonError};
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
-use bunnyhop_proto::{
+use bytes::Bytes;
+use compass_proto::{
     MAX_RELAY_FRAME, NodeId, RELAY_KEEPALIVE, RELAY_PROTOCOL, RELAY_TIMEOUT, RelayFrame, SecretHash,
 };
-use bytes::Bytes;
 use futures_util::{SinkExt as _, StreamExt as _};
 use hyper::upgrade::OnUpgrade;
 use hyper_util::rt::TokioIo;

@@ -7,9 +7,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bunnyhop_net::{Datagram, Stun};
-use bunnyhop_proto::{CandidateKind, IceCandidate, NodeId, PublicKey, SignalMessage};
 use bytes::BytesMut;
+use compass_net::{Datagram, Stun};
+use compass_proto::{CandidateKind, IceCandidate, NodeId, PublicKey, SignalMessage};
 use ipnet::IpNet;
 use rtc_ice::crypto::RTCCryptoProvider;
 use rtc_shared::{TransportContext, TransportMessage, TransportProtocol};

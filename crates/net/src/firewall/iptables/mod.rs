@@ -17,21 +17,21 @@ struct Table {
     chains: &'static [&'static str],
 }
 
-const MESH: &str = "bunnyhop-mesh";
+const MESH: &str = "compass-mesh";
 
 const INPUT: Hook = Hook {
     builtin: "INPUT",
-    chain: "bunnyhop-input",
+    chain: "compass-input",
 };
 
 const FORWARD: Hook = Hook {
     builtin: "FORWARD",
-    chain: "bunnyhop-forward",
+    chain: "compass-forward",
 };
 
 const POSTROUTING: Hook = Hook {
     builtin: "POSTROUTING",
-    chain: "bunnyhop-postrouting",
+    chain: "compass-postrouting",
 };
 
 const FILTER: Table = Table {

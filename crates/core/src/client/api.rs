@@ -2,7 +2,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bunnyhop_proto::{
+use compass_proto::{
     ApiErrorBody, ErrorCode, HubResponse, NetMapResponse, NodeInfo, RELAY_PROTOCOL,
     RegisterRequest, RegisterResponse, SignalBatch, SignalEnvelope, Token,
 };

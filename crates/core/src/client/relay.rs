@@ -5,10 +5,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
-use bunnyhop_proto::{
+use bytes::Bytes;
+use compass_proto::{
     MAX_RELAY_FRAME, MAX_RELAY_PAYLOAD, NodeId, RELAY_KEEPALIVE, RELAY_TIMEOUT, RelayFrame,
 };
-use bytes::Bytes;
 use futures_util::{SinkExt as _, StreamExt as _};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UdpSocket;

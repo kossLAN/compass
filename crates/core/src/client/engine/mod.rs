@@ -5,9 +5,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use bunnyhop_config::InterfaceConfig;
-use bunnyhop_net::{Dataplane, NetError};
-use bunnyhop_proto::{
+use compass_config::InterfaceConfig;
+use compass_net::{Dataplane, NetError};
+use compass_proto::{
     DnsName, HubInfo, NodeId, PathKind, Peer, PeerStatus, PrivateKey, PublicKey, SignalMessage,
 };
 use ipnet::IpNet;

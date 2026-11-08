@@ -1,6 +1,6 @@
 [package]
-name = "bunnyhop-core"
-description = "The bunnyhop mesh client and lighthouse"
+name = "compass-core"
+description = "The compass mesh client and lighthouse"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,9 +9,9 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-bunnyhop-config.workspace = true
-bunnyhop-net.workspace = true
-bunnyhop-proto.workspace = true
+compass-config.workspace = true
+compass-net.workspace = true
+compass-proto.workspace = true
 
 arc-swap.workspace = true
 async-trait.workspace = true

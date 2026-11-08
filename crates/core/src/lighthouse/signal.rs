@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use bunnyhop_proto::{NodeId, SignalDelivery, SignalMessage};
+use compass_proto::{NodeId, SignalDelivery, SignalMessage};
 use tokio::sync::watch;
 
 const CAPACITY: usize = 256;

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::{IpAddr, SocketAddr};
 
-use bunnyhop_proto::{MIN_MTU, NodeId, PacketRule, Peer, PublicKey};
+use compass_proto::{MIN_MTU, NodeId, PacketRule, Peer, PublicKey};
 use ipnet::IpNet;
 
 use super::{ExitNode, View};

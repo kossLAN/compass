@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use bunnyhop_config::LighthouseConfig;
-use bunnyhop_proto::{
+use compass_config::LighthouseConfig;
+use compass_proto::{
     LONG_POLL, NodeId, NodeInfo, PublicKey, RegisterRequest, RegisterResponse, Token,
 };
 use tokio::sync::{mpsc, oneshot, watch};

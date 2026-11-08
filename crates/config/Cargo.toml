@@ -1,6 +1,6 @@
 [package]
-name = "bunnyhop-config"
-description = "TOML configuration for bunnyhopd: its client and lighthouse"
+name = "compass-config"
+description = "TOML configuration for compassd: its client and lighthouse"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-bunnyhop-proto.workspace = true
+compass-proto.workspace = true
 
 ipnet.workspace = true
 jiff.workspace = true

@@ -4,9 +4,9 @@ use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::path::Path;
 
 use anyhow::Context as _;
-use bunnyhop_config::{ClientConfig, DaemonConfig, LighthouseConfig, SocketConfig};
-use bunnyhop_core::{Client, Lighthouse};
-use bunnyhop_proto::{IpcRequest, IpcResponse};
+use compass_config::{ClientConfig, DaemonConfig, LighthouseConfig, SocketConfig};
+use compass_core::{Client, Lighthouse};
+use compass_proto::{IpcRequest, IpcResponse};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -73,7 +73,7 @@ pub async fn run(path: &Path) -> anyhow::Result<()> {
 impl Roles {
     async fn reload(&mut self, config: DaemonConfig) {
         if config.socket != self.socket {
-            tracing::warn!("socket changes take effect when bunnyhopd restarts");
+            tracing::warn!("socket changes take effect when compassd restarts");
         }
 
         self.reload_lighthouse(config.lighthouse).await;

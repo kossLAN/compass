@@ -5,7 +5,7 @@ use serde::Deserialize;
 use crate::lighthouse::RawLighthouseConfig;
 use crate::{ClientConfig, ConfigError, LighthouseConfig, read_file};
 
-pub const DEFAULT_SOCKET: &str = "/run/bunnyhop/bunnyhop.sock";
+pub const DEFAULT_SOCKET: &str = "/run/compass/compass.sock";
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {

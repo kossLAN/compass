@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum_server::tls_rustls::RustlsConfig;
-use bunnyhop_config::{ConfigError, LighthouseConfig, read_key};
-use bunnyhop_proto::PrivateKey;
+use compass_config::{ConfigError, LighthouseConfig, read_key};
+use compass_proto::PrivateKey;
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 use tokio::task::JoinHandle;

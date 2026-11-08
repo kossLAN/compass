@@ -1,6 +1,6 @@
 [package]
-name = "bunnyhop-proto"
-description = "Wire and IPC types shared by the bunnyhop client and server"
+name = "compass-proto"
+description = "Wire and IPC types shared by the compass client and server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

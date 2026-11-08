@@ -4,7 +4,7 @@ use std::iter;
 use std::net::IpAddr;
 
 use crate::control::Control;
-use bunnyhop_proto::{
+use compass_proto::{
     ExitNodeChoice, LighthouseState, PathKind, Phase, RecordEntry, RecordState, StatusReport,
 };
 use serde::Serialize;

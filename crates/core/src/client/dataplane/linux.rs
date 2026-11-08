@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use bunnyhop_config::InterfaceConfig;
-use bunnyhop_net::{Dataplane, Firewall, PeerOp, PeerSpec, RouteSpec, Stun, Wireguard, plan_peers};
-use bunnyhop_proto::PublicKey;
+use compass_config::InterfaceConfig;
+use compass_net::{Dataplane, Firewall, PeerOp, PeerSpec, RouteSpec, Stun, Wireguard, plan_peers};
+use compass_proto::PublicKey;
 use ipnet::IpNet;
 
 use super::{

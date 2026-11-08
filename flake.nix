@@ -59,15 +59,15 @@
             };
         in
         rec {
-          default = bunnyhop;
+          default = compass;
 
-          bunnyhop = build {
-            pname = "bunnyhop";
+          compass = build {
+            pname = "compass";
             packages = [
-              "bunnyhop"
-              "bunnyhopd"
+              "compass"
+              "compassd"
             ];
-            daemons = [ "bunnyhopd" ];
+            daemons = [ "compassd" ];
           };
         }
       );

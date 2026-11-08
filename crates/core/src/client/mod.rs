@@ -12,9 +12,9 @@ mod session;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bunnyhop_config::{ClientConfig, ConfigError};
-use bunnyhop_net::{Dataplane, NetError};
-use bunnyhop_proto::{ExitNodeChoice, RecordEntry, StatusReport};
+use compass_config::{ClientConfig, ConfigError};
+use compass_net::{Dataplane, NetError};
+use compass_proto::{ExitNodeChoice, RecordEntry, StatusReport};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;

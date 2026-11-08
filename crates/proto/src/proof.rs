@@ -8,7 +8,7 @@ use sha2::Sha256;
 
 use crate::{PrivateKey, PublicKey};
 
-const LABEL: &[u8] = b"bunnyhop key proof v1";
+const LABEL: &[u8] = b"compass key proof v1";
 const MAX_PROOF_AGE: u64 = 300;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

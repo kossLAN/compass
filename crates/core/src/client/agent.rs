@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bunnyhop_config::{ClientConfig, ConfigError, read_key};
-use bunnyhop_net::Dataplane;
-use bunnyhop_proto::{
+use compass_config::{ClientConfig, ConfigError, read_key};
+use compass_net::Dataplane;
+use compass_proto::{
     AuthKey, DnsName, DnsRecord, ExitNodeChoice, ExitNodeStatus, LighthouseState, LighthouseStatus,
     MAX_RECORDS, NetMap, Network, NodeInfo, NodeStatus, Phase, PrivateKey, RecordEntry, SecretHash,
     SignalEnvelope, StatusReport, Token,

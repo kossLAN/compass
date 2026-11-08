@@ -5,7 +5,7 @@ use std::fmt;
 use std::net::IpAddr;
 use std::process::Stdio;
 
-use bunnyhop_proto::PacketRule;
+use compass_proto::PacketRule;
 use ipnet::IpNet;
 use tokio::io::AsyncWriteExt as _;
 use tokio::process::Command;

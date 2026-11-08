@@ -4,7 +4,7 @@ use bytes::{Buf as _, BufMut as _, Bytes, BytesMut};
 
 use crate::NodeId;
 
-pub const RELAY_PROTOCOL: &str = "bunnyhop-relay";
+pub const RELAY_PROTOCOL: &str = "compass-relay";
 pub const RELAY_KEEPALIVE: Duration = Duration::from_secs(15);
 pub const RELAY_TIMEOUT: Duration = Duration::from_secs(45);
 pub const MAX_RELAY_PAYLOAD: usize = u16::MAX as usize;

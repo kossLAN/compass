@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use bunnyhop_proto::{
+use compass_proto::{
     AuthKey, ErrorCode, KeyProof, NetMapResponse, NodeId, NodeInfo, PROTOCOL_VERSION, PrivateKey,
     RegisterRequest, RegisterResponse, SignalEnvelope, SignalMessage, Token,
 };

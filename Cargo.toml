@@ -8,10 +8,10 @@ edition = "2024"
 rust-version = "1.88"
 
 [workspace.dependencies]
-bunnyhop-core = { path = "crates/core" }
-bunnyhop-config = { path = "crates/config" }
-bunnyhop-net = { path = "crates/net" }
-bunnyhop-proto = { path = "crates/proto" }
+compass-core = { path = "crates/core" }
+compass-config = { path = "crates/config" }
+compass-net = { path = "crates/net" }
+compass-proto = { path = "crates/proto" }
 
 anyhow = "1.0.100"
 arc-swap = "1.7"

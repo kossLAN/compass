@@ -3,7 +3,7 @@
     reason = "STUN headers are in network byte order"
 )]
 
-use bunnyhop_net::is_stun;
+use compass_net::is_stun;
 
 const HEADER_LEN: usize = 20;
 const USERNAME: u16 = 0x0006;

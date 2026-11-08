@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use bunnyhop_config::{KeyConfig, LighthouseConfig, NamePattern};
-use bunnyhop_proto::{
+use compass_config::{KeyConfig, LighthouseConfig, NamePattern};
+use compass_proto::{
     CnameTarget, DnsName, DnsRecord, MAX_LABEL_LEN, NodeId, RecordData, RecordKind, RecordState,
     RecordStatus, RejectReason,
 };

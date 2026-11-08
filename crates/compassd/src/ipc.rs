@@ -3,8 +3,8 @@ use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
-use bunnyhop_config::SocketConfig;
-use bunnyhop_proto::{IpcRequest, IpcResponse, MAX_IPC_LINE};
+use compass_config::SocketConfig;
+use compass_proto::{IpcRequest, IpcResponse, MAX_IPC_LINE};
 use futures_util::{SinkExt as _, StreamExt as _};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};

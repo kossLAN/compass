@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::net::IpAddr;
 
-use bunnyhop_proto::{DNS_PORT, PacketRule, PortRange, Proto};
+use compass_proto::{DNS_PORT, PacketRule, PortRange, Proto};
 use ipnet::IpNet;
 
 use super::{FILTER, FORWARD, INPUT, Jump, Jumps, MESH, NAT, POSTROUTING, Table};

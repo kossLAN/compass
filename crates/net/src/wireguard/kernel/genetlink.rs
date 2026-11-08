@@ -1,4 +1,4 @@
-use bunnyhop_proto::PrivateKey;
+use compass_proto::PrivateKey;
 use futures_util::TryStreamExt as _;
 use genetlink::GenetlinkHandle;
 use ipnet::IpNet;
