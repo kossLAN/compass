@@ -1,11 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use compass_config::{ClientConfig, ConfigError, read_key};
-use compass_net::Dataplane;
+use compass_config::ConfigError;
 use compass_proto::{
     AuthKey, DnsName, DnsRecord, ExitNodeChoice, ExitNodeStatus, LighthouseState, LighthouseStatus,
     MAX_RECORDS, NetMap, Network, NodeInfo, NodeStatus, Phase, PrivateKey, RecordEntry, SecretHash,
@@ -17,11 +15,12 @@ use tokio::task::JoinHandle;
 use url::{Host, Url};
 
 use crate::client::api::ApiClient;
-use crate::client::endpoints::local_networks;
+use crate::client::dataplane::Platform;
 use crate::client::engine::{Engine, ExitNode, Setup, View};
 use crate::client::ice::IceEvent;
 use crate::client::meshes;
 use crate::client::session::{Session, SessionEvent};
+use crate::client::settings::{ClientSettings, LighthouseSettings};
 
 const LOGOUT_TIMEOUT: Duration = Duration::from_secs(5);
 const SIGNAL_QUEUE: usize = 256;
@@ -76,10 +75,11 @@ impl LighthouseConnection {
     }
 }
 
-pub struct Agent {
-    config: ClientConfig,
+pub struct Agent<P: Platform> {
+    config: ClientSettings,
+    device: P::Device,
+    platform: P,
     key: PrivateKey,
-    dataplane: Arc<Dataplane>,
     engine: Option<Engine>,
     reflexive: Vec<SocketAddr>,
     engines_started: u64,
@@ -98,30 +98,29 @@ pub struct Agent {
     lighthouse_addresses: Vec<IpAddr>,
 }
 
-impl Agent {
+impl<P: Platform> Agent<P> {
     pub fn new(
-        config: ClientConfig,
-        dataplane: Arc<Dataplane>,
+        config: ClientSettings,
+        device: P::Device,
+        platform: P,
         events: mpsc::Sender<(u64, SessionEvent)>,
         ice_events: mpsc::Sender<(u64, IceEvent)>,
     ) -> Result<Self, ConfigError> {
-        let keys = config.read_auth_keys()?;
-        let key = if let Some(path) = &config.private_key_file {
-            read_key(path)?
-        } else {
+        let key = config.private_key.clone().unwrap_or_else(|| {
             tracing::info!(
-                "private_key_file is not set, so this node gets a new identity each start; \
+                "no private key is configured, so this node gets a new identity each start; \
                  its pre-auth key should have a short offline_ttl"
             );
             PrivateKey::generate()
-        };
-        let settings = mesh_settings(&config, &keys)?;
-        let lighthouses = lighthouses(&config, keys);
+        });
+        let settings = mesh_settings(&config)?;
+        let lighthouses = lighthouses(&config);
         let infos = infos(&config, &settings);
         Ok(Self {
             config,
+            device,
+            platform,
             key,
-            dataplane,
             engine: None,
             reflexive: Vec::new(),
             engines_started: 0,
@@ -165,7 +164,7 @@ impl Agent {
     }
 
     pub async fn logout_if_ephemeral(&mut self) {
-        if self.config.private_key_file.is_none() {
+        if self.config.private_key.is_none() {
             self.logout().await;
         }
     }
@@ -363,16 +362,8 @@ impl Agent {
     }
 
     pub async fn refresh_local_addresses(&mut self) {
-        let networks = match self.dataplane.local_addresses().await {
-            Ok(all) => local_networks(
-                &all,
-                &self.config.interface.name,
-                &self.config.interface.exclude,
-            ),
-            Err(error) => {
-                tracing::debug!(%error, "failed to list local addresses");
-                return;
-            },
+        let Some(networks) = self.platform.local_networks(&self.device).await else {
+            return;
         };
 
         if networks == self.local_networks {
@@ -388,34 +379,28 @@ impl Agent {
         }
     }
 
-    pub async fn reload(&mut self, config: ClientConfig) -> Result<(), ConfigError> {
-        let keys = config.read_auth_keys()?;
-        let settings = mesh_settings(&config, &keys)?;
-        let key = match &config.private_key_file {
-            Some(path) => read_key(path)?,
-            None => self.key.clone(),
-        };
+    pub async fn reload(
+        &mut self,
+        config: ClientSettings,
+        device: P::Device,
+    ) -> Result<(), ConfigError> {
+        let settings = mesh_settings(&config)?;
+        let key = config
+            .private_key
+            .clone()
+            .unwrap_or_else(|| self.key.clone());
 
-        let endpoints = |config: &ClientConfig| -> Vec<(Url, Option<PathBuf>)> {
-            config
-                .lighthouses
-                .iter()
-                .map(|entry| (entry.url.clone(), entry.auth_key_file.clone()))
-                .collect()
-        };
-        let lighthouses_changed = endpoints(&config) != endpoints(&self.config);
-        let auth_keys_changed = self
-            .lighthouses
-            .iter()
-            .map(|lighthouse| &lighthouse.auth_key)
-            .ne(keys.iter());
+        let lighthouses_changed = changed(&self.config, &config, |lighthouse| &lighthouse.url);
+        let auth_keys_changed = changed(&self.config, &config, |lighthouse| &lighthouse.auth_key);
+        let cas_changed = changed(&self.config, &config, |lighthouse| &lighthouse.ca);
         let key_changed = key != self.key;
         let rebuild = lighthouses_changed
             || auth_keys_changed
             || key_changed
-            || config.interface != self.config.interface
+            || config.listen_port != self.config.listen_port
+            || device != self.device
             || dns_meshes(&settings) != dns_meshes(&self.settings);
-        let restart = rebuild || config.ca_file != self.config.ca_file || self.failure.is_some();
+        let restart = rebuild || cas_changed || self.failure.is_some();
 
         if key_changed {
             self.logout().await;
@@ -424,13 +409,14 @@ impl Agent {
         }
 
         self.config = config;
+        self.device = device;
         self.key = key;
         self.settings = settings;
         self.exit_choice = ExitNodeChoice::Config;
 
         if rebuild {
             self.shutdown().await;
-            self.lighthouses = lighthouses(&self.config, keys);
+            self.lighthouses = lighthouses(&self.config);
             self.infos = infos(&self.config, &self.settings);
         }
 
@@ -640,7 +626,7 @@ impl Agent {
         for entry in &self.config.lighthouses {
             let url = &entry.url;
 
-            match ApiClient::new(url.clone(), self.config.ca_file.as_deref()) {
+            match ApiClient::new(url.clone(), entry.ca.as_ref(), self.platform.roots()) {
                 Ok(client) => clients.push(client),
                 Err(error) => {
                     tracing::error!(lighthouse = %url, %error, "failed to set up the API client");
@@ -653,9 +639,8 @@ impl Agent {
         if self.engine.is_none() {
             self.engines_started += 1;
             let setup = Setup {
-                dataplane: Arc::clone(&self.dataplane),
-                interface: &self.config.interface,
                 key: &self.key,
+                listen_port: self.config.listen_port,
                 dns_meshes: dns_meshes(&self.settings),
                 lighthouses: self
                     .config
@@ -668,7 +653,7 @@ impl Agent {
                 generation: self.engines_started,
             };
 
-            match Engine::start(setup).await {
+            match Engine::start(&self.platform, &self.device, setup).await {
                 Ok(engine) => self.engine = Some(engine),
                 Err(error) => {
                     tracing::error!(%error, "failed to set up the dataplane");
@@ -757,13 +742,29 @@ impl Agent {
     }
 }
 
+fn changed<T>(
+    old: &ClientSettings,
+    new: &ClientSettings,
+    field: impl Fn(&LighthouseSettings) -> &T,
+) -> bool
+where
+    T: PartialEq,
+{
+    old.lighthouses
+        .iter()
+        .map(&field)
+        .ne(new.lighthouses.iter().map(&field))
+}
+
 /// Lighthouses that share an auth key serve one mesh; meshes are numbered in the order their
 /// first lighthouse is listed.
-fn mesh_indices(keys: &[AuthKey]) -> Vec<usize> {
+fn mesh_indices(config: &ClientSettings) -> Vec<usize> {
     let mut meshes: Vec<SecretHash> = Vec::new();
-    keys.iter()
-        .map(|key| {
-            let hash = key.hash();
+    config
+        .lighthouses
+        .iter()
+        .map(|lighthouse| {
+            let hash = lighthouse.auth_key.hash();
             meshes
                 .iter()
                 .position(|known| *known == hash)
@@ -775,15 +776,13 @@ fn mesh_indices(keys: &[AuthKey]) -> Vec<usize> {
         .collect()
 }
 
-fn lighthouses(config: &ClientConfig, keys: Vec<AuthKey>) -> Vec<LighthouseConnection> {
-    let meshes = mesh_indices(&keys);
+fn lighthouses(config: &ClientSettings) -> Vec<LighthouseConnection> {
     config
         .lighthouses
         .iter()
-        .zip(keys)
-        .zip(meshes)
-        .map(|((entry, auth_key), mesh)| {
-            LighthouseConnection::new(entry.url.clone(), mesh, auth_key)
+        .zip(mesh_indices(config))
+        .map(|(entry, mesh)| {
+            LighthouseConnection::new(entry.url.clone(), mesh, entry.auth_key.clone())
         })
         .collect()
 }
@@ -791,10 +790,7 @@ fn lighthouses(config: &ClientConfig, keys: Vec<AuthKey>) -> Vec<LighthouseConne
 /// Every lighthouse of a mesh must be sent the same node info, so the settings listed on each of
 /// them are combined: records are merged, and the rest may be set on any of them but must not
 /// disagree.
-fn mesh_settings(
-    config: &ClientConfig,
-    keys: &[AuthKey],
-) -> Result<Vec<MeshSettings>, ConfigError> {
+fn mesh_settings(config: &ClientSettings) -> Result<Vec<MeshSettings>, ConfigError> {
     #[derive(Default)]
     struct Combined {
         records: Vec<DnsRecord>,
@@ -805,7 +801,7 @@ fn mesh_settings(
 
     let mut meshes: Vec<Combined> = Vec::new();
 
-    for (entry, mesh) in config.lighthouses.iter().zip(mesh_indices(keys)) {
+    for (entry, mesh) in config.lighthouses.iter().zip(mesh_indices(config)) {
         if mesh == meshes.len() {
             meshes.push(Combined::default());
         }
@@ -909,14 +905,14 @@ fn dns_meshes(settings: &[MeshSettings]) -> BTreeSet<usize> {
         .collect()
 }
 
-fn infos(config: &ClientConfig, settings: &[MeshSettings]) -> Vec<watch::Sender<NodeInfo>> {
+fn infos(config: &ClientSettings, settings: &[MeshSettings]) -> Vec<watch::Sender<NodeInfo>> {
     settings
         .iter()
         .map(|mesh| watch::channel(node_info(config, mesh, Vec::new())).0)
         .collect()
 }
 
-fn node_info(config: &ClientConfig, mesh: &MeshSettings, avoid: Vec<IpAddr>) -> NodeInfo {
+fn node_info(config: &ClientSettings, mesh: &MeshSettings, avoid: Vec<IpAddr>) -> NodeInfo {
     let hostname = config
         .hostname
         .clone()

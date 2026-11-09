@@ -6,8 +6,8 @@ use boringtun::noise::handshake::parse_handshake_anon;
 use boringtun::noise::{Packet, Tunn, TunnResult};
 use compass_proto::PublicKey;
 use tokio::net::UdpSocket;
-use tun_rs::{GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 
+use super::offload::Writes;
 use super::table::{Peer, Table};
 use super::udp::{self, Batch, MAX_DATAGRAM};
 use super::{COOKIE_REPLY_LEN, Shared};
@@ -16,8 +16,8 @@ use crate::stun::is_stun;
 pub async fn run(shared: Arc<Shared>, socket: Arc<UdpSocket>) -> io::Result<()> {
     let mut buffer = vec![0; MAX_DATAGRAM];
     let mut control = udp::control_buffer();
-    let mut packets = Vec::with_capacity(IDEAL_BATCH_SIZE);
-    let mut gro = GROTable::default();
+    let mut packets = Vec::new();
+    let mut writes = Writes::new();
     let mut batch = Batch::default();
 
     loop {
@@ -27,20 +27,21 @@ pub async fn run(shared: Arc<Shared>, socket: Arc<UdpSocket>) -> io::Result<()> 
             continue;
         }
 
+        let tun = shared.tun.load_full();
+        let offset = tun.as_ref().map_or(0, |tun| tun.header_len());
         let datagrams = buffer[..received.len].chunks(received.stride);
         let count = receive(
             &shared,
             received.source,
             datagrams,
+            offset,
             &mut packets,
             &mut batch,
         );
 
         if count > 0
-            && let Err(error) = shared
-                .tun
-                .send_multiple(&mut gro, &mut packets[..count], VIRTIO_NET_HDR_LEN)
-                .await
+            && let Some(tun) = tun
+            && let Err(error) = tun.write(&mut writes, &mut packets[..count]).await
         {
             tracing::debug!(%error, "failed to write packets to the TUN device");
         }
@@ -54,6 +55,7 @@ fn receive<'a>(
     shared: &Shared,
     source: SocketAddr,
     datagrams: impl Iterator<Item = &'a [u8]>,
+    offset: usize,
     packets: &mut Vec<Vec<u8>>,
     batch: &mut Batch,
 ) -> usize {
@@ -75,14 +77,14 @@ fn receive<'a>(
         }
 
         let packet = &mut packets[count];
-        packet.resize(VIRTIO_NET_HDR_LEN + datagram.len(), 0);
+        packet.resize(offset + datagram.len(), 0);
+        let decrypted = &mut packet[offset..];
         let mut session = peer.session();
 
-        let inner = match session.tunn.decapsulate(
-            Some(source.ip()),
-            datagram,
-            &mut packet[VIRTIO_NET_HDR_LEN..],
-        ) {
+        let inner = match session
+            .tunn
+            .decapsulate(Some(source.ip()), datagram, decrypted)
+        {
             TunnResult::Err(_) => continue,
             TunnResult::Done => None,
             TunnResult::WriteToNetwork(reply) => {
@@ -98,8 +100,9 @@ fn receive<'a>(
 
         if let Some((len, address)) = inner
             && table.routes_to(peer, address)
+            && shared.filter.admits(&packet[offset..offset + len])
         {
-            packet.truncate(VIRTIO_NET_HDR_LEN + len);
+            packet.truncate(offset + len);
             count += 1;
         }
     }

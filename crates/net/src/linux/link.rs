@@ -7,7 +7,8 @@ use rtnetlink::packet_route::address::{AddressAttribute, AddressFlags, AddressMe
 use rtnetlink::packet_route::link::{InfoKind, LinkAttribute, LinkInfo, LinkMessage};
 use rtnetlink::{Handle, LinkUnspec};
 
-use crate::{EADDRNOTAVAIL, ENODEV, NetError, ignore_gone};
+use super::{EADDRNOTAVAIL, ENODEV, ignore_gone};
+use crate::NetError;
 
 #[derive(Debug, Clone)]
 pub struct Link {

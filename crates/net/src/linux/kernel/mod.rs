@@ -11,7 +11,7 @@ use rtnetlink::packet_route::link::InfoKind;
 pub use self::stun::KernelStun;
 
 use self::genetlink::Genetlink;
-use crate::link::Links;
+use crate::linux::link::Links;
 use crate::{DeviceSpec, DeviceState, NetError, PeerOp};
 
 pub struct KernelDevice {

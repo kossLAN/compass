@@ -1,34 +1,22 @@
-mod dataplane;
-mod firewall;
-mod link;
+#[cfg(feature = "linux")]
+mod linux;
 mod model;
 mod plan;
-mod resolvconf;
-mod route;
-mod rule;
 mod stun;
-mod sysctl;
 mod wireguard;
 
 use std::io;
 
-pub use dataplane::Dataplane;
-pub use firewall::{Firewall, MeshRules, NodeRules};
+#[cfg(feature = "linux")]
+pub use linux::{Dataplane, Firewall, NodeRules, Wireguard};
 pub use model::{
-    DeviceSpec, DeviceState, LinkDns, LocalAddress, PeerOp, PeerSpec, PeerState, RouteSpec,
-    RuleSpec,
+    DeviceSpec, DeviceState, LinkDns, LocalAddress, MeshRules, PeerOp, PeerSpec, PeerState,
+    RouteSpec, RuleSpec,
 };
 pub use plan::plan_peers;
 pub use stun::{Datagram, is_stun};
-pub use wireguard::{Stun, Wireguard};
-
-const PROTOCOL: u8 = 82;
-const TABLE: &str = "compass";
-
-const ENOENT: i32 = 2;
-const ESRCH: i32 = 3;
-const ENODEV: i32 = 19;
-const EADDRNOTAVAIL: i32 = 99;
+pub use tun_rs::AsyncDevice;
+pub use wireguard::{Intercept, Stun, Tun, UserspaceDevice};
 
 #[derive(Debug, thiserror::Error)]
 pub enum NetError {
@@ -62,31 +50,4 @@ pub enum NetError {
     Tun(io::Error),
     #[error("failed to bind the WireGuard socket: {0}")]
     Bind(io::Error),
-}
-
-impl NetError {
-    fn is_os_error(&self, code: i32) -> bool {
-        matches!(self, Self::Netlink(error) if error.raw_os_error() == Some(code))
-    }
-
-    fn genetlink(error: genetlink::GenetlinkError) -> Self {
-        match error {
-            genetlink::GenetlinkError::NetlinkError(error) => Self::Netlink(error),
-            error => Self::Protocol(error.to_string()),
-        }
-    }
-
-    fn rtnetlink(error: rtnetlink::Error) -> Self {
-        match error {
-            rtnetlink::Error::NetlinkError(message) => Self::Netlink(message.to_io()),
-            error => Self::Protocol(error.to_string()),
-        }
-    }
-}
-
-fn ignore_gone(result: Result<(), NetError>, gone: i32) -> Result<(), NetError> {
-    match result {
-        Err(error) if error.is_os_error(gone) => Ok(()),
-        result => result,
-    }
 }

@@ -21,13 +21,17 @@ pub fn is_stun(payload: &[u8]) -> bool {
     payload.get(4..8) == Some(MAGIC_COOKIE.to_be_bytes().as_slice())
 }
 
-pub fn local_address_for(destination: SocketAddr, mark: u32) -> io::Result<IpAddr> {
+pub fn local_address_for(destination: SocketAddr, mark: Option<u32>) -> io::Result<IpAddr> {
     let probe = Socket::new(
         Domain::for_address(destination),
         Type::DGRAM,
         Some(Protocol::UDP),
     )?;
-    probe.set_mark(mark)?;
+
+    if let Some(mark) = mark {
+        probe.set_mark(mark)?;
+    }
+
     probe.connect(&destination.into())?;
     probe
         .local_addr()?

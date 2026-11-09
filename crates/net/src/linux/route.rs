@@ -9,8 +9,9 @@ use rtnetlink::packet_route::route::{
     RouteAddress, RouteAttribute, RouteMessage, RouteProtocol, RouteScope,
 };
 
-use crate::link::Links;
-use crate::{ESRCH, NetError, PROTOCOL, RouteSpec, ignore_gone};
+use super::link::Links;
+use super::{ESRCH, PROTOCOL, ignore_gone};
+use crate::{NetError, RouteSpec};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct RouteKey {

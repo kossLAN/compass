@@ -7,8 +7,9 @@ use rtnetlink::packet_route::AddressFamily;
 use rtnetlink::packet_route::route::RouteProtocol;
 use rtnetlink::packet_route::rule::{RuleAction, RuleAttribute, RuleFlags, RuleMessage};
 
-use crate::link::Links;
-use crate::{ENOENT, NetError, PROTOCOL, RuleSpec, ignore_gone};
+use super::link::Links;
+use super::{ENOENT, PROTOCOL, ignore_gone};
+use crate::{NetError, RuleSpec};
 
 pub async fn sync(links: &Links, desired: &BTreeSet<RuleSpec>) -> Result<(), NetError> {
     let handle = links.handle();

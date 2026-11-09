@@ -1,5 +1,5 @@
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use compass_proto::{
@@ -9,6 +9,8 @@ use compass_proto::{
 use reqwest::header::{CONNECTION, UPGRADE};
 use reqwest::{Certificate, Client, RequestBuilder, Response, StatusCode, Upgraded};
 use url::Url;
+
+use crate::client::settings::CaCertificate;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL_TIMEOUT: Duration = Duration::from_secs(90);
@@ -36,6 +38,8 @@ pub enum SetupError {
         path: PathBuf,
         error: reqwest::Error,
     },
+    #[error("the CA is not a PEM certificate: {0}")]
+    ParsePem(reqwest::Error),
     #[error("setting up HTTPS: {0}")]
     Http(reqwest::Error),
 }
@@ -81,19 +85,18 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
-    pub fn new(base: Url, ca_file: Option<&Path>) -> Result<Self, SetupError> {
+    pub fn new(
+        base: Url,
+        ca: Option<&CaCertificate>,
+        roots: Option<&[Certificate]>,
+    ) -> Result<Self, SetupError> {
         let mut builder = Client::builder().timeout(REQUEST_TIMEOUT);
+        let ca = ca.map(certificate).transpose()?;
 
-        if let Some(path) = ca_file {
-            let pem = std::fs::read(path).map_err(|error| SetupError::ReadCa {
-                path: path.to_owned(),
-                error,
-            })?;
-            let certificate = Certificate::from_pem(&pem).map_err(|error| SetupError::ParseCa {
-                path: path.to_owned(),
-                error,
-            })?;
-            builder = builder.tls_certs_merge([certificate]);
+        if let Some(roots) = roots {
+            builder = builder.tls_certs_only(roots.iter().cloned().chain(ca));
+        } else if let Some(ca) = ca {
+            builder = builder.tls_certs_merge([ca]);
         }
 
         Ok(Self {
@@ -193,6 +196,24 @@ impl ApiClient {
         )
         .await
         .map(drop)
+    }
+}
+
+fn certificate(ca: &CaCertificate) -> Result<Certificate, SetupError> {
+    match ca {
+        CaCertificate::File(path) => {
+            let pem = std::fs::read(path).map_err(|error| SetupError::ReadCa {
+                path: path.clone(),
+                error,
+            })?;
+            Certificate::from_pem(&pem).map_err(|error| SetupError::ParseCa {
+                path: path.clone(),
+                error,
+            })
+        },
+        CaCertificate::Pem(pem) => {
+            Certificate::from_pem(pem.as_bytes()).map_err(SetupError::ParsePem)
+        },
     }
 }
 

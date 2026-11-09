@@ -5,8 +5,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use compass_config::InterfaceConfig;
-use compass_net::{Dataplane, NetError};
+use compass_net::NetError;
 use compass_proto::{
     DnsName, HubInfo, NodeId, PathKind, Peer, PeerStatus, PrivateKey, PublicKey, SignalMessage,
 };
@@ -14,8 +13,8 @@ use ipnet::IpNet;
 use tokio::sync::mpsc;
 use url::Url;
 
-use crate::client::dataplane::{self, Backend, DataplaneError, Path, Plan, Stats};
-use crate::client::dns::{self, DnsService};
+use crate::client::dataplane::{Backend, DataplaneError, Path, Plan, Platform, Stats};
+use crate::client::dns;
 use crate::client::ice::{self, IceEvent, IceHandle, IcePeer};
 use crate::client::meshes::Mesh;
 use crate::client::relay::Relay;
@@ -53,11 +52,9 @@ pub struct ExitNode {
 }
 
 pub struct Engine {
-    dataplane: Arc<Dataplane>,
     backend: Box<dyn Backend>,
     relay: Arc<Relay>,
     ice: IceHandle,
-    dns: DnsService,
     own_key: PublicKey,
     dns_meshes: BTreeSet<usize>,
     lighthouses: Vec<Url>,
@@ -68,7 +65,6 @@ pub struct Engine {
     stats: Stats,
     applied: Option<Plan>,
     synced_at: Option<Instant>,
-    exit_warned: bool,
 }
 
 #[derive(Default)]
@@ -104,9 +100,8 @@ impl HubEndpoint {
 }
 
 pub struct Setup<'a> {
-    pub dataplane: Arc<Dataplane>,
-    pub interface: &'a InterfaceConfig,
     pub key: &'a PrivateKey,
+    pub listen_port: u16,
     pub dns_meshes: BTreeSet<usize>,
     pub lighthouses: Vec<Url>,
     pub local_networks: Vec<IpNet>,
@@ -115,24 +110,28 @@ pub struct Setup<'a> {
 }
 
 impl Engine {
-    pub async fn start(setup: Setup<'_>) -> Result<Self, DataplaneError> {
-        let backend =
-            dataplane::start(Arc::clone(&setup.dataplane), setup.interface, setup.key).await?;
+    pub async fn start<P>(
+        platform: &P,
+        device: &P::Device,
+        setup: Setup<'_>,
+    ) -> Result<Self, DataplaneError>
+    where
+        P: Platform,
+    {
+        let backend = platform.start(device, setup.key, setup.listen_port).await?;
         let own_key = setup.key.public_key();
         let ice = IceHandle::spawn(
             backend.stun(),
-            setup.interface.listen_port,
+            setup.listen_port,
             own_key,
             setup.local_networks,
             setup.ice_events,
             setup.generation,
         );
         Ok(Self {
-            dataplane: setup.dataplane,
             backend,
-            relay: Relay::new(setup.interface.listen_port),
+            relay: Relay::new(setup.listen_port),
             ice,
-            dns: DnsService::default(),
             own_key,
             dns_meshes: setup.dns_meshes,
             lighthouses: setup.lighthouses,
@@ -143,7 +142,6 @@ impl Engine {
             stats: Stats::default(),
             applied: None,
             synced_at: None,
-            exit_warned: false,
         })
     }
 
@@ -164,7 +162,7 @@ impl Engine {
 
         self.hubs
             .retain(|lighthouse, _| view.hubs.contains_key(lighthouse));
-        self.check_exit_serving(&view).await?;
+        self.backend.check_exit_serving(&view.meshes).await?;
 
         self.direct.retain(|key, _| view.lists(key));
         self.relay
@@ -206,43 +204,7 @@ impl Engine {
         self.sync(&[]).await?;
 
         if !self.dns_meshes.is_empty() {
-            self.dns
-                .update(
-                    &self.dataplane,
-                    self.backend.interface(),
-                    &meshes,
-                    &lighthouses,
-                )
-                .await;
-        }
-
-        Ok(())
-    }
-
-    async fn check_exit_serving(&mut self, view: &View) -> Result<(), DataplaneError> {
-        let serving = view
-            .meshes
-            .iter()
-            .any(|mesh| !mesh.netmap.exit_clients.is_empty());
-
-        if self.exit_warned || !serving {
-            return Ok(());
-        }
-
-        for (family, ipv6, key) in [
-            ("IPv4", false, "net/ipv4/conf/all/forwarding"),
-            ("IPv6", true, "net/ipv6/conf/all/forwarding"),
-        ] {
-            if view
-                .meshes
-                .iter()
-                .flat_map(|mesh| &mesh.netmap.exit_clients)
-                .any(|net| net.addr().is_ipv6() == ipv6)
-                && self.dataplane.sysctl(key).await?.as_deref() != Some("1")
-            {
-                tracing::warn!("serving as an exit node, but {family} forwarding is disabled");
-                self.exit_warned = true;
-            }
+            self.backend.update_dns(&meshes, &lighthouses).await;
         }
 
         Ok(())
@@ -367,9 +329,6 @@ impl Engine {
     }
 
     pub async fn teardown(&mut self) {
-        self.dns
-            .stop(&self.dataplane, self.backend.interface())
-            .await;
         self.backend.teardown().await;
         self.view = None;
         self.applied = None;

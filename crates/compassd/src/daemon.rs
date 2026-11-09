@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::Context as _;
 use compass_config::{ClientConfig, DaemonConfig, LighthouseConfig, SocketConfig};
-use compass_core::{Client, Lighthouse};
+use compass_core::{Client, ClientSettings, Lighthouse, LinuxPlatform};
 use compass_proto::{IpcRequest, IpcResponse};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
@@ -16,7 +16,7 @@ use crate::ipc;
 struct Roles {
     socket: SocketConfig,
     lighthouse: Option<Lighthouse>,
-    client: Option<Client>,
+    client: Option<Client<LinuxPlatform>>,
 }
 
 pub async fn run(path: &Path) -> anyhow::Result<()> {
@@ -32,7 +32,7 @@ pub async fn run(path: &Path) -> anyhow::Result<()> {
     };
 
     let client = match config.client {
-        Some(config) => Some(Client::start(config).await?),
+        Some(config) => Some(start_client(&config).await?),
         None => None,
     };
 
@@ -108,11 +108,11 @@ impl Roles {
     async fn reload_client(&mut self, config: Option<ClientConfig>) {
         match (self.client.as_ref(), config) {
             (Some(client), Some(config)) => {
-                if let Err(error) = client.reload(config).await {
+                if let Err(error) = reload_client(client, &config).await {
                     tracing::error!(%error, "keeping the running client config");
                 }
             },
-            (None, Some(config)) => match Client::start(config).await {
+            (None, Some(config)) => match start_client(&config).await {
                 Ok(client) => self.client = Some(client),
                 Err(error) => tracing::error!(%error, "failed to start the client"),
             },
@@ -163,6 +163,20 @@ impl Roles {
             tracing::warn!(%error, "the lighthouse stopped with an error");
         }
     }
+}
+
+async fn start_client(config: &ClientConfig) -> anyhow::Result<Client<LinuxPlatform>> {
+    let settings = ClientSettings::from_config(config)?;
+    let platform = LinuxPlatform::new()?;
+    Ok(Client::start(settings, config.interface.clone(), platform).await?)
+}
+
+async fn reload_client(
+    client: &Client<LinuxPlatform>,
+    config: &ClientConfig,
+) -> anyhow::Result<()> {
+    let settings = ClientSettings::from_config(config)?;
+    Ok(client.reload(settings, config.interface.clone()).await?)
 }
 
 fn notify_systemd_ready() {

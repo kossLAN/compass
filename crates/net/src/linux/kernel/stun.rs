@@ -92,7 +92,7 @@ impl KernelStun {
     }
 
     fn source_for(&self, destination: SocketAddr) -> io::Result<IpAddr> {
-        local_address_for(destination, self.mark)
+        local_address_for(destination, Some(self.mark))
     }
 }
 

@@ -1,17 +1,16 @@
-use std::io::{self, IoSlice, IoSliceMut};
+use std::io::{self, IoSliceMut};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::AsRawFd as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use nix::errno::Errno;
-use nix::sys::socket::{
-    ControlMessage, ControlMessageOwned, MsgFlags, SockaddrStorage, getsockopt, recvmsg, sendmsg,
-    setsockopt, sockopt,
-};
+use nix::sys::socket::{MsgFlags, SockaddrStorage, recvmsg};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::io::Interest;
 use tokio::net::UdpSocket;
+
+use super::offload;
 
 pub const MAX_DATAGRAM: usize = u16::MAX as usize;
 
@@ -23,26 +22,25 @@ const SOCKET_BUFFER: usize = 7 << 20;
 
 pub struct Sockets {
     port: u16,
-    mark: u32,
+    mark: Option<u32>,
     v4: Arc<UdpSocket>,
     v6: Option<Arc<UdpSocket>>,
     gso: AtomicBool,
 }
 
 impl Sockets {
-    pub fn bind(port: u16, mark: u32) -> io::Result<Self> {
+    pub fn bind(port: u16, mark: Option<u32>) -> io::Result<Self> {
         let v4 = bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)), mark)?;
         let v6 = bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)), mark)
             .inspect_err(|error| tracing::debug!(%error, "no IPv6 WireGuard socket"))
             .ok();
-        let gso = getsockopt(&v4, sockopt::UdpGsoSegment).is_ok();
 
         Ok(Self {
             port,
             mark,
+            gso: AtomicBool::new(offload::supports_gso(&v4)),
             v4: Arc::new(v4),
             v6: v6.map(Arc::new),
-            gso: AtomicBool::new(gso),
         })
     }
 
@@ -50,7 +48,7 @@ impl Sockets {
         self.port
     }
 
-    pub const fn mark(&self) -> u32 {
+    pub const fn mark(&self) -> Option<u32> {
         self.mark
     }
 
@@ -87,7 +85,10 @@ impl Sockets {
         let socket = self.socket_for(group.destination)?;
 
         if group.count > 1 && self.gso.load(Ordering::Relaxed) {
-            match send_segments(socket, group).await {
+            let sent =
+                offload::send_segments(socket, group.destination, group.payload, group.segment);
+
+            match sent.await {
                 Err(error) if error.raw_os_error() == Some(Errno::EIO as i32) => {
                     tracing::debug!("UDP segmentation offload is unavailable");
                     self.gso.store(false, Ordering::Relaxed);
@@ -229,12 +230,7 @@ pub async fn recv(
                 Some(control),
                 MsgFlags::empty(),
             )?;
-            let stride = message
-                .cmsgs()?
-                .find_map(|cmsg| match cmsg {
-                    ControlMessageOwned::UdpGroSegments(size) => usize::try_from(size).ok(),
-                    _ => None,
-                })
+            let stride = offload::gro_stride(&message)
                 .filter(|size| *size > 0)
                 .unwrap_or(message.bytes);
             let source = message
@@ -252,26 +248,7 @@ pub async fn recv(
         .await
 }
 
-async fn send_segments(socket: &UdpSocket, group: &Group<'_>) -> io::Result<()> {
-    let address = SockaddrStorage::from(group.destination);
-    let segment = group.segment as u16;
-
-    socket
-        .async_io(Interest::WRITABLE, || {
-            sendmsg(
-                socket.as_raw_fd(),
-                &[IoSlice::new(group.payload)],
-                &[ControlMessage::UdpGsoSegments(&segment)],
-                MsgFlags::empty(),
-                Some(&address),
-            )
-            .map(drop)
-            .map_err(io::Error::from)
-        })
-        .await
-}
-
-fn bind(address: SocketAddr, mark: u32) -> io::Result<UdpSocket> {
+fn bind(address: SocketAddr, mark: Option<u32>) -> io::Result<UdpSocket> {
     let socket = Socket::new(
         Domain::for_address(address),
         Type::DGRAM,
@@ -282,7 +259,10 @@ fn bind(address: SocketAddr, mark: u32) -> io::Result<UdpSocket> {
         socket.set_only_v6(true)?;
     }
 
-    socket.set_mark(mark)?;
+    if let Some(mark) = mark {
+        socket.set_mark(mark)?;
+    }
+
     socket.set_recv_buffer_size(SOCKET_BUFFER)?;
     socket.set_send_buffer_size(SOCKET_BUFFER)?;
     socket.set_nonblocking(true)?;
@@ -290,9 +270,7 @@ fn bind(address: SocketAddr, mark: u32) -> io::Result<UdpSocket> {
 
     let socket = UdpSocket::from_std(socket.into())?;
 
-    if let Err(error) = setsockopt(&socket, sockopt::UdpGroSegment, &true) {
-        tracing::debug!(%error, "UDP receive offload is unavailable");
-    }
+    offload::enable_gro(&socket);
 
     Ok(socket)
 }

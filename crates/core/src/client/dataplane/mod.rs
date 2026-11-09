@@ -1,27 +1,23 @@
+mod hosted;
+#[cfg(feature = "linux")]
 mod linux;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
 use std::time::SystemTime;
 
-use compass_config::InterfaceConfig;
-use compass_net::{
-    Dataplane, DeviceSpec, Firewall, MeshRules, NetError, NodeRules, RuleSpec, Stun, Wireguard,
-};
+use compass_net::{DeviceState, MeshRules, NetError, PeerOp, PeerSpec, Stun, plan_peers};
 use compass_proto::{NodeId, PacketRule, PrivateKey, PublicKey};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
+use reqwest::Certificate;
+use url::Url;
 
-use self::linux::Linux;
+pub use self::hosted::{HostedPlatform, TunProvider, TunShape, Underlying};
+#[cfg(feature = "linux")]
+pub use self::linux::LinuxPlatform;
+use crate::client::meshes::Mesh;
 
-pub const FWMARK: u32 = 0x5254;
 pub const KEEPALIVE: u16 = 25;
-
-const MAIN_TABLE: u32 = 254;
-const EXIT_TABLE: u32 = 5254;
-const BYPASS_PRIORITY: u32 = 5250;
-const MAIN_PRIORITY: u32 = 5251;
-const EXIT_PRIORITY: u32 = 5252;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DataplaneError {
@@ -45,15 +41,6 @@ pub struct MeshPlan {
     pub peers: Vec<IpAddr>,
     pub inbound: Vec<PacketRule>,
     pub exit_clients: Vec<IpNet>,
-}
-
-impl MeshPlan {
-    fn source(&self, net: &IpNet) -> Option<IpAddr> {
-        self.addresses
-            .iter()
-            .copied()
-            .find(|address| address.is_ipv4() == net.addr().is_ipv4())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,15 +68,6 @@ pub struct ExitPlan {
     pub bypass: Vec<IpAddr>,
 }
 
-impl ExitPlan {
-    fn source(&self, net: &IpNet) -> Option<IpAddr> {
-        self.sources
-            .iter()
-            .copied()
-            .find(|address| address.is_ipv4() == net.addr().is_ipv4())
-    }
-}
-
 impl Plan {
     fn exit_peer(&self) -> Option<PublicKey> {
         self.exit.as_ref()?.peer
@@ -104,61 +82,61 @@ impl Plan {
         addresses.into_iter().map(IpNet::from).collect()
     }
 
-    fn firewall(&self, interface: String) -> NodeRules {
-        NodeRules {
-            interface,
-            meshes: self
-                .meshes
-                .iter()
-                .map(|mesh| MeshRules {
-                    prefixes: mesh.prefixes.clone(),
-                    addresses: mesh.addresses.clone(),
-                    inbound: mesh.inbound.clone(),
-                    exit_clients: mesh.exit_clients.clone(),
-                })
-                .collect(),
-            local_dns: self.local_dns,
-        }
+    fn peer_specs(&self) -> Vec<PeerSpec> {
+        let exit_peer = self.exit_peer();
+        self.peers
+            .iter()
+            .map(|peer| {
+                let mut allowed_ips: Vec<IpNet> =
+                    peer.addresses.iter().copied().map(IpNet::from).collect();
+
+                if exit_peer == Some(peer.key) {
+                    allowed_ips.extend(default_routes());
+                }
+
+                let endpoint = match peer.path {
+                    Path::Direct(endpoint) => Some(endpoint),
+                    Path::Relay(_) | Path::None => peer.proxy,
+                };
+
+                PeerSpec {
+                    key: peer.key,
+                    endpoint,
+                    allowed_ips,
+                    keepalive: if peer.keepalive { KEEPALIVE } else { 0 },
+                }
+            })
+            .collect()
     }
 
-    fn exit_rules(&self) -> BTreeSet<RuleSpec> {
-        let mut rules = BTreeSet::new();
+    fn peer_ops(&self, actual: &DeviceState, rehandshake: &[PublicKey]) -> Vec<PeerOp> {
+        let desired = self.peer_specs();
+        let mut ops: Vec<PeerOp> = plan_peers(&desired, actual)
+            .into_iter()
+            .filter(|op| !matches!(op, PeerOp::Upsert(spec) if rehandshake.contains(&spec.key)))
+            .collect();
 
-        let Some(exit) = &self.exit else {
-            return rules;
-        };
-
-        for address in &exit.bypass {
-            rules.insert(RuleSpec {
-                priority: BYPASS_PRIORITY,
-                ipv6: address.is_ipv6(),
-                table: MAIN_TABLE,
-                destination: Some(IpNet::from(*address)),
-                unless_fwmark: None,
-                suppress_prefix_length: None,
-            });
+        for spec in desired
+            .iter()
+            .filter(|spec| rehandshake.contains(&spec.key))
+        {
+            ops.push(PeerOp::Remove(spec.key));
+            ops.push(PeerOp::Upsert(spec.clone()));
         }
 
-        for ipv6 in [false, true] {
-            rules.insert(RuleSpec {
-                priority: MAIN_PRIORITY,
-                ipv6,
-                table: MAIN_TABLE,
-                destination: None,
-                unless_fwmark: None,
-                suppress_prefix_length: Some(0),
-            });
-            rules.insert(RuleSpec {
-                priority: EXIT_PRIORITY,
-                ipv6,
-                table: EXIT_TABLE,
-                destination: None,
-                unless_fwmark: Some(FWMARK),
-                suppress_prefix_length: None,
-            });
-        }
+        ops
+    }
 
-        rules
+    pub fn mesh_rules(&self) -> Vec<MeshRules> {
+        self.meshes
+            .iter()
+            .map(|mesh| MeshRules {
+                prefixes: mesh.prefixes.clone(),
+                addresses: mesh.addresses.clone(),
+                inbound: mesh.inbound.clone(),
+                exit_clients: mesh.exit_clients.clone(),
+            })
+            .collect()
     }
 }
 
@@ -178,6 +156,24 @@ pub struct Stats {
     pub peers: BTreeMap<PublicKey, Counters>,
 }
 
+impl From<DeviceState> for Stats {
+    fn from(device: DeviceState) -> Self {
+        let peers = device
+            .peers
+            .into_iter()
+            .map(|(key, peer)| {
+                let counters = Counters {
+                    last_handshake: peer.last_handshake,
+                    rx_bytes: peer.rx_bytes,
+                    tx_bytes: peer.tx_bytes,
+                };
+                (key, counters)
+            })
+            .collect();
+        Self { peers }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait Backend: Send + Sync {
     async fn apply(&mut self, plan: &Plan, rehandshake: &[PublicKey])
@@ -187,29 +183,29 @@ pub trait Backend: Send + Sync {
 
     async fn teardown(&mut self);
 
-    fn interface(&self) -> &str;
-
     fn stun(&self) -> Option<Stun>;
+
+    async fn check_exit_serving(&mut self, _meshes: &[Mesh]) -> Result<(), DataplaneError> {
+        Ok(())
+    }
+
+    async fn update_dns(&mut self, _meshes: &[Mesh], _lighthouses: &BTreeMap<usize, Url>) {}
 }
 
-pub async fn start(
-    dataplane: Arc<Dataplane>,
-    interface: &InterfaceConfig,
-    key: &PrivateKey,
-) -> Result<Box<dyn Backend>, DataplaneError> {
-    let firewall = Firewall::detect().await?;
-    tracing::info!(%firewall, "using firewall");
+#[async_trait::async_trait]
+pub trait Platform: Send + Sync + 'static {
+    type Device: PartialEq + Send + Sync + 'static;
 
-    let wireguard = Wireguard::detect(&DeviceSpec {
-        name: interface.name.clone(),
-        private_key: key.clone(),
-        listen_port: interface.listen_port,
-        fwmark: FWMARK,
-    })
-    .await?;
-    tracing::info!(%wireguard, "using WireGuard");
+    async fn local_networks(&self, device: &Self::Device) -> Option<Vec<IpNet>>;
 
-    Ok(Box::new(Linux::new(
-        dataplane, firewall, wireguard, interface,
-    )))
+    fn roots(&self) -> Option<&[Certificate]> {
+        None
+    }
+
+    async fn start(
+        &self,
+        device: &Self::Device,
+        key: &PrivateKey,
+        listen_port: u16,
+    ) -> Result<Box<dyn Backend>, DataplaneError>;
 }

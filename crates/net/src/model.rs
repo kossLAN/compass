@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::SystemTime;
 
-use compass_proto::{PrivateKey, PublicKey};
+use compass_proto::{PacketRule, PrivateKey, PublicKey};
 use ipnet::IpNet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,4 +73,12 @@ pub struct LinkDns {
 pub struct LocalAddress {
     pub interface: String,
     pub address: IpNet,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeshRules {
+    pub prefixes: Vec<IpNet>,
+    pub addresses: Vec<IpAddr>,
+    pub inbound: Vec<PacketRule>,
+    pub exit_clients: Vec<IpNet>,
 }

@@ -6,8 +6,8 @@ use compass_proto::{DNS_PORT, PacketRule, PortRange, Proto};
 use ipnet::IpNet;
 
 use super::reset;
-use crate::TABLE;
-use crate::firewall::{Family, NodeRules};
+use crate::linux::TABLE;
+use crate::linux::firewall::{Family, NodeRules};
 
 impl Family {
     const fn suffix(self) -> &'static str {

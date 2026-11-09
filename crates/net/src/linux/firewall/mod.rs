@@ -5,26 +5,17 @@ use std::fmt;
 use std::net::IpAddr;
 use std::process::Stdio;
 
-use compass_proto::PacketRule;
 use ipnet::IpNet;
 use tokio::io::AsyncWriteExt as _;
 use tokio::process::Command;
 
-use crate::NetError;
+use crate::{MeshRules, NetError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRules {
     pub interface: String,
     pub meshes: Vec<MeshRules>,
     pub local_dns: Option<IpAddr>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MeshRules {
-    pub prefixes: Vec<IpNet>,
-    pub addresses: Vec<IpAddr>,
-    pub inbound: Vec<PacketRule>,
-    pub exit_clients: Vec<IpNet>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

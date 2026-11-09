@@ -1,4 +1,11 @@
+mod filter;
 mod inbound;
+#[cfg(feature = "linux")]
+#[path = "offload/linux.rs"]
+mod offload;
+#[cfg(not(feature = "linux"))]
+#[path = "offload/plain.rs"]
+mod offload;
 mod outbound;
 mod stun;
 mod table;
@@ -10,24 +17,22 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use arc_swap::ArcSwap;
+pub use self::offload::Tun;
+pub use self::stun::UserspaceStun;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use boringtun::noise::TunnResult;
 use boringtun::noise::rate_limiter::RateLimiter;
 use boringtun::x25519::{PublicKey as X25519PublicKey, StaticSecret};
-use compass_proto::PublicKey;
-use ipnet::IpNet;
+use compass_proto::{PrivateKey, PublicKey};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
-use tun_rs::{AsyncDevice, DeviceBuilder};
 
-pub use self::stun::UserspaceStun;
-
+use self::filter::Filter;
 use self::table::{Entry, Peer, Table};
 use self::udp::{Batch, Sockets};
-use crate::link::Links;
 use crate::stun::{Datagram, local_address_for};
-use crate::{DeviceSpec, DeviceState, NetError, PeerOp, PeerSpec, PeerState};
+use crate::{DeviceState, MeshRules, NetError, PeerOp, PeerSpec, PeerState};
 
 const INDEX_MASK: u32 = (1 << 24) - 1;
 const HANDSHAKE_RATE_LIMIT: u64 = 100;
@@ -36,7 +41,12 @@ const COOKIE_REPLY_LEN: usize = 64;
 const DATA_OVERHEAD: usize = 32;
 const TIMER_TICK: Duration = Duration::from_millis(250);
 const RATE_LIMIT_RESET: Duration = Duration::from_secs(1);
+const FLOW_SWEEP: Duration = Duration::from_secs(30);
 const STUN_QUEUE: usize = 64;
+
+pub trait Intercept: Send + Sync + 'static {
+    fn take(&self, packet: &[u8]) -> bool;
+}
 
 struct Shared {
     table: ArcSwap<Table>,
@@ -44,8 +54,10 @@ struct Shared {
     public: X25519PublicKey,
     rate_limiter: Arc<RateLimiter>,
     sockets: Sockets,
-    tun: AsyncDevice,
+    tun: ArcSwapOption<Tun>,
     stun: mpsc::Sender<Datagram>,
+    intercept: Option<Arc<dyn Intercept>>,
+    filter: Filter,
 }
 
 impl Shared {
@@ -104,8 +116,6 @@ impl Shared {
 }
 
 pub struct UserspaceDevice {
-    name: String,
-    links: Links,
     shared: Arc<Shared>,
     public_key: PublicKey,
     stun: Arc<UserspaceStun>,
@@ -116,14 +126,14 @@ pub struct UserspaceDevice {
 }
 
 impl UserspaceDevice {
-    pub fn start(spec: &DeviceSpec, links: Links) -> Result<Self, NetError> {
-        let tun = DeviceBuilder::new()
-            .name(&spec.name)
-            .offload(true)
-            .build_async()
-            .map_err(NetError::Tun)?;
-        let sockets = Sockets::bind(spec.listen_port, spec.fwmark).map_err(NetError::Bind)?;
-        let secret = StaticSecret::from(*spec.private_key.to_bytes());
+    pub fn new(
+        key: &PrivateKey,
+        listen_port: u16,
+        mark: Option<u32>,
+        intercept: Option<Arc<dyn Intercept>>,
+    ) -> Result<Self, NetError> {
+        let sockets = Sockets::bind(listen_port, mark).map_err(NetError::Bind)?;
+        let secret = StaticSecret::from(*key.to_bytes());
         let public = X25519PublicKey::from(&secret);
         let (stun, received) = mpsc::channel(STUN_QUEUE);
 
@@ -133,8 +143,10 @@ impl UserspaceDevice {
             secret,
             public,
             sockets,
-            tun,
+            tun: ArcSwapOption::empty(),
             stun,
+            intercept,
+            filter: Filter::default(),
         });
 
         let mut tasks = JoinSet::new();
@@ -150,11 +162,9 @@ impl UserspaceDevice {
         spawn(&mut tasks, "timers", timers(Arc::clone(&shared)));
 
         Ok(Self {
-            name: spec.name.clone(),
-            links,
             stun: Arc::new(UserspaceStun::new(Arc::downgrade(&shared), received)),
             shared,
-            public_key: spec.private_key.public_key(),
+            public_key: key.public_key(),
             mtu: None,
             next_index: 0,
             tasks,
@@ -162,25 +172,36 @@ impl UserspaceDevice {
         })
     }
 
-    pub async fn ensure(&mut self, mtu: u16, addresses: &[IpNet]) -> Result<(), NetError> {
-        self.set_mtu(mtu);
-        let index = self.links.index(&self.name).await?;
-        self.links.configure(index, mtu, addresses).await
+    pub fn set_tun(&mut self, tun: Arc<Tun>) {
+        self.shared.tun.store(Some(tun));
+        self.restart_outbound();
     }
 
-    fn set_mtu(&mut self, mtu: u16) {
+    pub fn filter_inbound(&self, rules: Vec<MeshRules>) {
+        self.shared.filter.set_rules(rules);
+    }
+
+    pub fn set_mtu(&mut self, mtu: u16) {
         if self.mtu == Some(mtu) {
             return;
         }
 
-        let mut outbound = JoinSet::new();
-        spawn(
-            &mut outbound,
-            "outbound",
-            outbound::run(Arc::clone(&self.shared), usize::from(mtu)),
-        );
-        self.outbound = outbound;
         self.mtu = Some(mtu);
+        self.restart_outbound();
+    }
+
+    fn restart_outbound(&mut self) {
+        let mut outbound = JoinSet::new();
+
+        if let (Some(tun), Some(mtu)) = (self.shared.tun.load_full(), self.mtu) {
+            spawn(
+                &mut outbound,
+                "outbound",
+                outbound::run(Arc::clone(&self.shared), tun, usize::from(mtu)),
+            );
+        }
+
+        self.outbound = outbound;
     }
 
     pub fn apply(&mut self, ops: &[PeerOp]) {
@@ -270,7 +291,7 @@ impl UserspaceDevice {
         DeviceState {
             public_key: Some(self.public_key),
             listen_port: self.shared.sockets.port(),
-            fwmark: self.shared.sockets.mark(),
+            fwmark: self.shared.sockets.mark().unwrap_or_default(),
             peers,
         }
     }
@@ -279,10 +300,9 @@ impl UserspaceDevice {
         Arc::clone(&self.stun)
     }
 
-    pub async fn delete(&mut self) -> Result<(), NetError> {
+    pub async fn delete(&mut self) {
         self.outbound.shutdown().await;
         self.tasks.shutdown().await;
-        self.links.delete_named(&self.name).await
     }
 }
 
@@ -301,6 +321,7 @@ fn spawn(
 async fn timers(shared: Arc<Shared>) -> io::Result<()> {
     let mut tick = tokio::time::interval(TIMER_TICK);
     let mut reset = tokio::time::interval(RATE_LIMIT_RESET);
+    let mut sweep = tokio::time::interval(FLOW_SWEEP);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     reset.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut batch = Batch::default();
@@ -313,6 +334,7 @@ async fn timers(shared: Arc<Shared>) -> io::Result<()> {
                 batch.clear();
             },
             _ = reset.tick() => shared.rate_limiter.reset_count(),
+            _ = sweep.tick() => shared.filter.expire(),
         }
     }
 }

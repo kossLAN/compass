@@ -8,31 +8,26 @@ mod ice;
 mod meshes;
 mod relay;
 mod session;
+mod settings;
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use compass_config::{ClientConfig, ConfigError};
-use compass_net::{Dataplane, NetError};
+use compass_config::ConfigError;
 use compass_proto::{ExitNodeChoice, RecordEntry, StatusReport};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use self::agent::Agent;
+#[cfg(feature = "linux")]
+pub use self::dataplane::LinuxPlatform;
+pub use self::dataplane::{HostedPlatform, Platform, TunProvider, TunShape, Underlying};
 use self::ice::IceEvent;
 use self::session::SessionEvent;
+pub use self::settings::{CaCertificate, ClientSettings, LighthouseSettings};
 
 const TICK: Duration = Duration::from_secs(1);
 const ADDRESS_SCAN: Duration = Duration::from_secs(10);
-
-#[derive(Debug, thiserror::Error)]
-pub enum StartError {
-    #[error(transparent)]
-    Config(#[from] ConfigError),
-    #[error(transparent)]
-    Net(#[from] NetError),
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReloadError {
@@ -46,25 +41,31 @@ pub enum ReloadError {
 #[error("the client has stopped")]
 pub struct Stopped;
 
-enum Command {
+enum Command<D> {
     Status(oneshot::Sender<StatusReport>),
     Records(oneshot::Sender<Vec<RecordEntry>>),
     SetExitNode(ExitNodeChoice, oneshot::Sender<StatusReport>),
-    Reload(Box<ClientConfig>, oneshot::Sender<Result<(), ConfigError>>),
+    Reload(
+        Box<(ClientSettings, D)>,
+        oneshot::Sender<Result<(), ConfigError>>,
+    ),
 }
 
-pub struct Client {
-    commands: mpsc::Sender<Command>,
+pub struct Client<P: Platform> {
+    commands: mpsc::Sender<Command<P::Device>>,
     cancel: CancellationToken,
     task: JoinHandle<()>,
 }
 
-impl Client {
-    pub async fn start(config: ClientConfig) -> Result<Self, StartError> {
-        let dataplane = Arc::new(Dataplane::new()?);
+impl<P: Platform> Client<P> {
+    pub async fn start(
+        config: ClientSettings,
+        device: P::Device,
+        platform: P,
+    ) -> Result<Self, ConfigError> {
         let (events_sender, events) = mpsc::channel(64);
         let (ice_sender, ice_events) = mpsc::channel(256);
-        let mut agent = Agent::new(config, dataplane, events_sender, ice_sender)?;
+        let mut agent = Agent::new(config, device, platform, events_sender, ice_sender)?;
         agent.start().await;
 
         let (commands, receiver) = mpsc::channel(16);
@@ -89,9 +90,13 @@ impl Client {
         self.call(|reply| Command::SetExitNode(choice, reply)).await
     }
 
-    pub async fn reload(&self, config: ClientConfig) -> Result<(), ReloadError> {
+    pub async fn reload(
+        &self,
+        config: ClientSettings,
+        device: P::Device,
+    ) -> Result<(), ReloadError> {
         Ok(self
-            .call(|reply| Command::Reload(Box::new(config), reply))
+            .call(|reply| Command::Reload(Box::new((config, device)), reply))
             .await??)
     }
 
@@ -107,7 +112,7 @@ impl Client {
 
     async fn call<T>(
         &self,
-        command: impl FnOnce(oneshot::Sender<T>) -> Command,
+        command: impl FnOnce(oneshot::Sender<T>) -> Command<P::Device>,
     ) -> Result<T, Stopped> {
         let (reply, response) = oneshot::channel();
         self.commands
@@ -118,13 +123,15 @@ impl Client {
     }
 }
 
-async fn run(
-    mut agent: Agent,
-    mut commands: mpsc::Receiver<Command>,
+async fn run<P>(
+    mut agent: Agent<P>,
+    mut commands: mpsc::Receiver<Command<P::Device>>,
     mut events: mpsc::Receiver<(u64, SessionEvent)>,
     mut ice_events: mpsc::Receiver<(u64, IceEvent)>,
     cancel: CancellationToken,
-) {
+) where
+    P: Platform,
+{
     let mut tick = tokio::time::interval(TICK);
     let mut scan = tokio::time::interval(ADDRESS_SCAN);
 
@@ -142,8 +149,9 @@ async fn run(
                     agent.set_exit_node(choice).await;
                     let _ = reply.send(agent.status());
                 },
-                Command::Reload(config, reply) => {
-                    let _ = reply.send(agent.reload(*config).await);
+                Command::Reload(reload, reply) => {
+                    let (config, device) = *reload;
+                    let _ = reply.send(agent.reload(config, device).await);
                 },
             },
             Some((id, event)) = events.recv() => agent.on_event(id, event).await,

@@ -10,7 +10,7 @@ workspace = true
 
 [dependencies]
 compass-config.workspace = true
-compass-core.workspace = true
+compass-core = { workspace = true, features = ["linux"] }
 compass-proto.workspace = true
 
 anyhow.workspace = true

@@ -1,7 +1,8 @@
 mod render;
 
 use super::{NodeRules, run};
-use crate::{NetError, TABLE};
+use crate::NetError;
+use crate::linux::TABLE;
 
 const NFT: &str = "nft";
 

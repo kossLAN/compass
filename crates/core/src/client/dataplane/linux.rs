@@ -1,21 +1,87 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use compass_config::InterfaceConfig;
-use compass_net::{Dataplane, Firewall, PeerOp, PeerSpec, RouteSpec, Stun, Wireguard, plan_peers};
-use compass_proto::PublicKey;
-use ipnet::IpNet;
-
-use super::{
-    Backend, Counters, DataplaneError, EXIT_TABLE, KEEPALIVE, MAIN_TABLE, Path, Plan, Stats,
-    default_routes,
+use compass_net::{
+    Dataplane, DeviceSpec, Firewall, LocalAddress, NetError, NodeRules, RouteSpec, RuleSpec, Stun,
+    Wireguard,
 };
+use compass_proto::{PrivateKey, PublicKey};
+use ipnet::IpNet;
+use url::Url;
+
+use super::{Backend, DataplaneError, ExitPlan, MeshPlan, Plan, Platform, Stats, default_routes};
+use crate::client::dns::DnsService;
+use crate::client::meshes::Mesh;
+
+const FWMARK: u32 = 0x5254;
+const MAIN_TABLE: u32 = 254;
+const EXIT_TABLE: u32 = 5254;
+const BYPASS_PRIORITY: u32 = 5250;
+const MAIN_PRIORITY: u32 = 5251;
+const EXIT_PRIORITY: u32 = 5252;
+
+pub struct LinuxPlatform {
+    dataplane: Arc<Dataplane>,
+}
+
+impl LinuxPlatform {
+    pub fn new() -> Result<Self, NetError> {
+        Ok(Self {
+            dataplane: Arc::new(Dataplane::new()?),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl Platform for LinuxPlatform {
+    type Device = InterfaceConfig;
+
+    async fn local_networks(&self, device: &InterfaceConfig) -> Option<Vec<IpNet>> {
+        match self.dataplane.local_addresses().await {
+            Ok(all) => Some(local_networks(&all, &device.name, &device.exclude)),
+            Err(error) => {
+                tracing::debug!(%error, "failed to list local addresses");
+                None
+            },
+        }
+    }
+
+    async fn start(
+        &self,
+        device: &InterfaceConfig,
+        key: &PrivateKey,
+        listen_port: u16,
+    ) -> Result<Box<dyn Backend>, DataplaneError> {
+        let firewall = Firewall::detect().await?;
+        tracing::info!(%firewall, "using firewall");
+
+        let wireguard = Wireguard::detect(&DeviceSpec {
+            name: device.name.clone(),
+            private_key: key.clone(),
+            listen_port,
+            fwmark: FWMARK,
+        })
+        .await?;
+        tracing::info!(%wireguard, "using WireGuard");
+
+        Ok(Box::new(Linux::new(
+            Arc::clone(&self.dataplane),
+            firewall,
+            wireguard,
+            &device.name,
+        )))
+    }
+}
 
 pub struct Linux {
     dataplane: Arc<Dataplane>,
     firewall: Firewall,
     wireguard: Wireguard,
-    interface: InterfaceConfig,
+    interface: String,
+    dns: DnsService,
+    exit_warned: bool,
 }
 
 impl Linux {
@@ -23,13 +89,15 @@ impl Linux {
         dataplane: Arc<Dataplane>,
         firewall: Firewall,
         wireguard: Wireguard,
-        interface: &InterfaceConfig,
+        interface: &str,
     ) -> Self {
         Self {
             dataplane,
             firewall,
             wireguard,
-            interface: interface.clone(),
+            interface: interface.to_owned(),
+            dns: DnsService::default(),
+            exit_warned: false,
         }
     }
 
@@ -38,46 +106,8 @@ impl Linux {
         plan: &Plan,
         rehandshake: &[PublicKey],
     ) -> Result<(), DataplaneError> {
-        let exit_peer = plan.exit_peer();
-        let desired: Vec<PeerSpec> = plan
-            .peers
-            .iter()
-            .map(|peer| {
-                let mut allowed_ips: Vec<IpNet> =
-                    peer.addresses.iter().copied().map(IpNet::from).collect();
-
-                if exit_peer == Some(peer.key) {
-                    allowed_ips.extend(default_routes());
-                }
-
-                let endpoint = match peer.path {
-                    Path::Direct(endpoint) => Some(endpoint),
-                    Path::Relay(_) | Path::None => peer.proxy,
-                };
-
-                PeerSpec {
-                    key: peer.key,
-                    endpoint,
-                    allowed_ips,
-                    keepalive: if peer.keepalive { KEEPALIVE } else { 0 },
-                }
-            })
-            .collect();
-
         let actual = self.wireguard.state().await?;
-        let mut ops: Vec<PeerOp> = plan_peers(&desired, &actual)
-            .into_iter()
-            .filter(|op| !matches!(op, PeerOp::Upsert(spec) if rehandshake.contains(&spec.key)))
-            .collect();
-
-        for spec in desired
-            .iter()
-            .filter(|spec| rehandshake.contains(&spec.key))
-        {
-            ops.push(PeerOp::Remove(spec.key));
-            ops.push(PeerOp::Upsert(spec.clone()));
-        }
-
+        let ops = plan.peer_ops(&actual, rehandshake);
         Ok(self.wireguard.apply(&ops).await?)
     }
 
@@ -85,7 +115,7 @@ impl Linux {
         let route = |destination, source, table| RouteSpec {
             source,
             destination,
-            device: self.interface.name.clone(),
+            device: self.interface.clone(),
             table,
         };
 
@@ -141,7 +171,7 @@ impl Backend for Linux {
         rehandshake: &[PublicKey],
     ) -> Result<(), DataplaneError> {
         self.firewall
-            .apply(&plan.firewall(self.interface.name.clone()))
+            .apply(&plan.firewall(self.interface.clone()))
             .await?;
         self.wireguard.ensure(plan.mtu, &plan.addresses()).await?;
         self.sync_peers(plan, rehandshake).await?;
@@ -151,23 +181,11 @@ impl Backend for Linux {
     }
 
     async fn stats(&mut self) -> Result<Stats, DataplaneError> {
-        let device = self.wireguard.state().await?;
-        let peers = device
-            .peers
-            .into_iter()
-            .map(|(key, peer)| {
-                let counters = Counters {
-                    last_handshake: peer.last_handshake,
-                    rx_bytes: peer.rx_bytes,
-                    tx_bytes: peer.tx_bytes,
-                };
-                (key, counters)
-            })
-            .collect();
-        Ok(Stats { peers })
+        Ok(self.wireguard.state().await?.into())
     }
 
     async fn teardown(&mut self) {
+        self.dns.stop(&self.dataplane, &self.interface).await;
         let deleted = self.wireguard.delete().await;
 
         if let Err(error) = &deleted {
@@ -185,11 +203,134 @@ impl Backend for Linux {
         }
     }
 
-    fn interface(&self) -> &str {
-        &self.interface.name
-    }
-
     fn stun(&self) -> Option<Stun> {
         self.wireguard.stun()
     }
+
+    async fn check_exit_serving(&mut self, meshes: &[Mesh]) -> Result<(), DataplaneError> {
+        let serving = meshes
+            .iter()
+            .any(|mesh| !mesh.netmap.exit_clients.is_empty());
+
+        if self.exit_warned || !serving {
+            return Ok(());
+        }
+
+        for (family, ipv6, key) in [
+            ("IPv4", false, "net/ipv4/conf/all/forwarding"),
+            ("IPv6", true, "net/ipv6/conf/all/forwarding"),
+        ] {
+            if meshes
+                .iter()
+                .flat_map(|mesh| &mesh.netmap.exit_clients)
+                .any(|net| net.addr().is_ipv6() == ipv6)
+                && self.dataplane.sysctl(key).await?.as_deref() != Some("1")
+            {
+                tracing::warn!("serving as an exit node, but {family} forwarding is disabled");
+                self.exit_warned = true;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn update_dns(&mut self, meshes: &[Mesh], lighthouses: &BTreeMap<usize, Url>) {
+        self.dns
+            .update(&self.dataplane, &self.interface, meshes, lighthouses)
+            .await;
+    }
+}
+
+impl MeshPlan {
+    fn source(&self, net: &IpNet) -> Option<IpAddr> {
+        self.addresses
+            .iter()
+            .copied()
+            .find(|address| address.is_ipv4() == net.addr().is_ipv4())
+    }
+}
+
+impl ExitPlan {
+    fn source(&self, net: &IpNet) -> Option<IpAddr> {
+        self.sources
+            .iter()
+            .copied()
+            .find(|address| address.is_ipv4() == net.addr().is_ipv4())
+    }
+}
+
+impl Plan {
+    fn firewall(&self, interface: String) -> NodeRules {
+        NodeRules {
+            interface,
+            meshes: self.mesh_rules(),
+            local_dns: self.local_dns,
+        }
+    }
+
+    fn exit_rules(&self) -> BTreeSet<RuleSpec> {
+        let mut rules = BTreeSet::new();
+
+        let Some(exit) = &self.exit else {
+            return rules;
+        };
+
+        for address in &exit.bypass {
+            rules.insert(RuleSpec {
+                priority: BYPASS_PRIORITY,
+                ipv6: address.is_ipv6(),
+                table: MAIN_TABLE,
+                destination: Some(IpNet::from(*address)),
+                unless_fwmark: None,
+                suppress_prefix_length: None,
+            });
+        }
+
+        for ipv6 in [false, true] {
+            rules.insert(RuleSpec {
+                priority: MAIN_PRIORITY,
+                ipv6,
+                table: MAIN_TABLE,
+                destination: None,
+                unless_fwmark: None,
+                suppress_prefix_length: Some(0),
+            });
+            rules.insert(RuleSpec {
+                priority: EXIT_PRIORITY,
+                ipv6,
+                table: EXIT_TABLE,
+                destination: None,
+                unless_fwmark: Some(FWMARK),
+                suppress_prefix_length: None,
+            });
+        }
+
+        rules
+    }
+}
+
+fn local_networks(addresses: &[LocalAddress], interface: &str, exclude: &[String]) -> Vec<IpNet> {
+    let mut networks: Vec<IpNet> = addresses
+        .iter()
+        .filter(|local| local.interface != "lo" && local.interface != interface)
+        .filter(|local| {
+            !exclude
+                .iter()
+                .any(|pattern| matches_glob(pattern, &local.interface))
+        })
+        .map(|local| local.address)
+        .filter(|network| match network.addr() {
+            IpAddr::V4(v4) => !v4.is_loopback() && !v4.is_link_local(),
+            IpAddr::V6(v6) => !v6.is_loopback() && !v6.is_unicast_link_local(),
+        })
+        .collect();
+    networks.sort_unstable();
+    networks.dedup();
+    networks
+}
+
+fn matches_glob(pattern: &str, name: &str) -> bool {
+    pattern
+        .strip_suffix('*')
+        .map_or(pattern == name, |prefix| name.starts_with(prefix))
 }

@@ -10,7 +10,8 @@ use netlink_packet_wireguard::{
 };
 
 use super::dump;
-use crate::{DeviceState, ENODEV, NetError, PeerOp, PeerSpec};
+use crate::linux::ENODEV;
+use crate::{DeviceState, NetError, PeerOp, PeerSpec};
 
 const PEERS_PER_MESSAGE: usize = 32;
 

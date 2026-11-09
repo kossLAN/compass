@@ -6,7 +6,7 @@ use compass_proto::{DNS_PORT, PacketRule, PortRange, Proto};
 use ipnet::IpNet;
 
 use super::{FILTER, FORWARD, INPUT, Jump, Jumps, MESH, NAT, POSTROUTING, Table};
-use crate::firewall::{Family, NodeRules};
+use crate::linux::firewall::{Family, NodeRules};
 
 pub fn apply(rules: &NodeRules, family: Family, jumps: &Jumps) -> String {
     let mut script = String::new();

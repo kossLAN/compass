@@ -13,17 +13,29 @@ compass-proto.workspace = true
 
 arc-swap.workspace = true
 boringtun.workspace = true
-futures-util.workspace = true
-genetlink.workspace = true
+etherparse.workspace = true
 ipnet.workspace = true
-netlink-packet-core.workspace = true
-netlink-packet-generic.workspace = true
-netlink-packet-wireguard.workspace = true
 nix.workspace = true
 prefix-trie.workspace = true
-rtnetlink.workspace = true
 socket2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tun-rs.workspace = true
+
+futures-util = { workspace = true, optional = true }
+genetlink = { workspace = true, optional = true }
+netlink-packet-core = { workspace = true, optional = true }
+netlink-packet-generic = { workspace = true, optional = true }
+netlink-packet-wireguard = { workspace = true, optional = true }
+rtnetlink = { workspace = true, optional = true }
+
+[features]
+linux = [
+  "dep:futures-util",
+  "dep:genetlink",
+  "dep:netlink-packet-core",
+  "dep:netlink-packet-generic",
+  "dep:netlink-packet-wireguard",
+  "dep:rtnetlink",
+]

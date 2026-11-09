@@ -1,9 +1,8 @@
 use std::collections::BTreeSet;
 
-use crate::link::Links;
-use crate::{
-    LinkDns, LocalAddress, NetError, RouteSpec, RuleSpec, resolvconf, route, rule, sysctl,
-};
+use super::link::Links;
+use super::{resolvconf, route, rule, sysctl};
+use crate::{LinkDns, LocalAddress, NetError, RouteSpec, RuleSpec};
 
 pub struct Dataplane {
     links: Links,
