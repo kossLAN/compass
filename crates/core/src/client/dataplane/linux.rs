@@ -11,9 +11,12 @@ use compass_proto::{PrivateKey, PublicKey};
 use ipnet::IpNet;
 use url::Url;
 
-use super::{Backend, DataplaneError, ExitPlan, MeshPlan, Plan, Platform, Stats, default_routes};
+use super::{
+    Backend, DataplaneError, ExitPlan, LocalNetworks, MeshPlan, Plan, Platform, Stats,
+    default_routes,
+};
 use crate::client::dns::DnsService;
-use crate::client::meshes::Mesh;
+use crate::client::meshes::{Mesh, overlaps};
 
 const FWMARK: u32 = 0x5254;
 const MAIN_TABLE: u32 = 254;
@@ -38,9 +41,12 @@ impl LinuxPlatform {
 impl Platform for LinuxPlatform {
     type Device = InterfaceConfig;
 
-    async fn local_networks(&self, device: &InterfaceConfig) -> Option<Vec<IpNet>> {
+    async fn local_networks(&self, device: &InterfaceConfig) -> Option<LocalNetworks> {
         match self.dataplane.local_addresses().await {
-            Ok(all) => Some(local_networks(&all, &device.name, &device.exclude)),
+            Ok(all) => Some(LocalNetworks {
+                offered: local_networks(&all, &device.name, &device.exclude),
+                attached: local_networks(&all, &device.name, &[]),
+            }),
             Err(error) => {
                 tracing::debug!(%error, "failed to list local addresses");
                 None
@@ -157,10 +163,6 @@ impl Linux {
 
         routes
     }
-}
-
-fn overlaps(a: &IpNet, b: &IpNet) -> bool {
-    a.contains(&b.network()) || b.contains(&a.network())
 }
 
 #[async_trait::async_trait]

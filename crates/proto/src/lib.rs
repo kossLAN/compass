@@ -22,7 +22,7 @@ pub use ipc::{
 };
 pub use key::{KEY_LEN, KeyError, PrivateKey, PublicKey};
 pub use netmap::{
-    Addresses, HubInfo, MAX_MTU, MESH_RANGE_V4, MESH_RANGE_V6, MIN_MTU, NetMap, NetMapError,
+    Addresses, HubInfo, MAX_MTU, MESH_RANGE_V6, MESH_RANGES_V4, MIN_MTU, NetMap, NetMapError,
     NetMapResponse, Network, NodeId, PacketRule, Peer, PortRange, PortRangeError, Proto,
     RecordState, RecordStatus, RejectReason, SelfNode,
 };

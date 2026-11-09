@@ -65,7 +65,7 @@ fn origins(meshes: &[Mesh], owned: &[Vec<DnsName>]) -> Vec<DnsName> {
     let mut origins: Vec<DnsName> = owned.iter().flatten().cloned().collect();
     let reverse = meshes
         .iter()
-        .flat_map(|mesh| mesh.netmap.network.prefixes())
+        .flat_map(|mesh| mesh.routed.iter().copied())
         .flat_map(reverse_zones);
 
     for zone in reverse {

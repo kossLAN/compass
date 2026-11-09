@@ -45,7 +45,12 @@ impl Addresses {
     }
 }
 
-pub const MESH_RANGE_V4: Ipv4Net = Ipv4Net::new_assert(Ipv4Addr::new(100, 64, 0, 0), 10);
+pub const MESH_RANGES_V4: [Ipv4Net; 4] = [
+    Ipv4Net::new_assert(Ipv4Addr::new(100, 64, 0, 0), 10),
+    Ipv4Net::new_assert(Ipv4Addr::new(10, 0, 0, 0), 8),
+    Ipv4Net::new_assert(Ipv4Addr::new(172, 16, 0, 0), 12),
+    Ipv4Net::new_assert(Ipv4Addr::new(192, 168, 0, 0), 16),
+];
 pub const MESH_RANGE_V6: Ipv6Net =
     Ipv6Net::new_assert(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 0), 7);
 pub const MIN_MTU: u16 = 1280;
@@ -54,7 +59,7 @@ const REVERSE_ROOTS: [&str; 2] = ["in-addr.arpa", "ip6.arpa"];
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NetMapError {
-    #[error("mesh prefix {0} is outside {MESH_RANGE_V4} and {MESH_RANGE_V6}")]
+    #[error("mesh prefix {0} is outside 100.64.0.0/10, the RFC 1918 ranges and {MESH_RANGE_V6}")]
     Prefix(IpNet),
     #[error("address {0} is outside the mesh prefixes")]
     Address(IpAddr),
@@ -80,7 +85,10 @@ pub struct Network {
 
 impl Network {
     pub fn check(&self) -> Result<(), NetMapError> {
-        if !MESH_RANGE_V4.contains(&self.ipv4) {
+        if !MESH_RANGES_V4
+            .iter()
+            .any(|range| range.contains(&self.ipv4))
+        {
             return Err(NetMapError::Prefix(self.ipv4.into()));
         }
 

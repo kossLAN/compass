@@ -16,7 +16,7 @@ use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 
 use self::local::{Local, Resolver};
-use super::{Backend, DataplaneError, Plan, Platform, Stats, default_routes};
+use super::{Backend, DataplaneError, LocalNetworks, Plan, Platform, Stats, default_routes};
 use crate::client::dns::Zones;
 use crate::client::meshes::Mesh;
 
@@ -67,8 +67,12 @@ impl HostedPlatform {
 impl Platform for HostedPlatform {
     type Device = ();
 
-    async fn local_networks(&self, (): &()) -> Option<Vec<IpNet>> {
-        Some(self.underlying.load().local_networks.clone())
+    async fn local_networks(&self, (): &()) -> Option<LocalNetworks> {
+        let networks = self.underlying.load().local_networks.clone();
+        Some(LocalNetworks {
+            offered: networks.clone(),
+            attached: networks,
+        })
     }
 
     fn roots(&self) -> Option<&[Certificate]> {

@@ -15,7 +15,7 @@ use tokio::task::JoinHandle;
 use url::{Host, Url};
 
 use crate::client::api::ApiClient;
-use crate::client::dataplane::Platform;
+use crate::client::dataplane::{LocalNetworks, Platform};
 use crate::client::engine::{Engine, ExitNode, Setup, View};
 use crate::client::ice::IceEvent;
 use crate::client::meshes;
@@ -93,7 +93,8 @@ pub struct Agent<P: Platform> {
     settings: Vec<MeshSettings>,
     avoided: BTreeMap<usize, Vec<IpAddr>>,
     pinned: BTreeMap<usize, Network>,
-    local_networks: Vec<IpNet>,
+    local_networks: LocalNetworks,
+    overlapping: Vec<(usize, IpNet)>,
     exit_choice: ExitNodeChoice,
     lighthouse_addresses: Vec<IpAddr>,
 }
@@ -134,7 +135,8 @@ impl<P: Platform> Agent<P> {
             settings,
             avoided: BTreeMap::new(),
             pinned: BTreeMap::new(),
-            local_networks: Vec::new(),
+            local_networks: LocalNetworks::default(),
+            overlapping: Vec::new(),
             exit_choice: ExitNodeChoice::Config,
             lighthouse_addresses: Vec::new(),
         })
@@ -373,10 +375,14 @@ impl<P: Platform> Agent<P> {
         self.local_networks = networks;
 
         if let Some(engine) = &mut self.engine
-            && let Err(error) = engine.network_changed(self.local_networks.clone()).await
+            && let Err(error) = engine
+                .network_changed(self.local_networks.offered.clone())
+                .await
         {
             tracing::debug!(%error, "failed to handle the network change");
         }
+
+        self.refresh().await;
     }
 
     pub async fn reload(
@@ -451,7 +457,7 @@ impl<P: Platform> Agent<P> {
         }
 
         let mut view = View {
-            meshes: meshes::resolve(netmaps, &self.avoided),
+            meshes: meshes::resolve(netmaps, &self.avoided, &self.local_networks.attached),
             hubs: BTreeMap::new(),
             attached: BTreeMap::new(),
             connected: BTreeSet::new(),
@@ -495,6 +501,28 @@ impl<P: Platform> Agent<P> {
             self.avoided = avoided;
             self.publish_info();
         }
+
+        let overlapping: Vec<(usize, IpNet)> = view
+            .meshes
+            .iter()
+            .flat_map(|mesh| mesh.overlapping.iter().map(|net| (mesh.index, *net)))
+            .collect();
+
+        for mesh in &view.meshes {
+            for network in mesh
+                .overlapping
+                .iter()
+                .filter(|net| !self.overlapping.contains(&(mesh.index, **net)))
+            {
+                tracing::warn!(
+                    mesh = %mesh.netmap.network.domain,
+                    %network,
+                    "a local network overlaps this mesh; only peers outside it are routed through the mesh",
+                );
+            }
+        }
+
+        self.overlapping = overlapping;
 
         let Some(engine) = &mut self.engine else {
             return;
@@ -648,7 +676,7 @@ impl<P: Platform> Agent<P> {
                     .iter()
                     .map(|entry| entry.url.clone())
                     .collect(),
-                local_networks: self.local_networks.clone(),
+                local_networks: self.local_networks.offered.clone(),
                 ice_events: self.ice_events.clone(),
                 generation: self.engines_started,
             };

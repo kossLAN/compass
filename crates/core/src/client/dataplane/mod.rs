@@ -144,6 +144,12 @@ fn default_routes() -> [IpNet; 2] {
     [IpNet::V4(Ipv4Net::default()), IpNet::V6(Ipv6Net::default())]
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalNetworks {
+    pub offered: Vec<IpNet>,
+    pub attached: Vec<IpNet>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counters {
     pub last_handshake: Option<SystemTime>,
@@ -196,7 +202,7 @@ pub trait Backend: Send + Sync {
 pub trait Platform: Send + Sync + 'static {
     type Device: PartialEq + Send + Sync + 'static;
 
-    async fn local_networks(&self, device: &Self::Device) -> Option<Vec<IpNet>>;
+    async fn local_networks(&self, device: &Self::Device) -> Option<LocalNetworks>;
 
     fn roots(&self) -> Option<&[Certificate]> {
         None

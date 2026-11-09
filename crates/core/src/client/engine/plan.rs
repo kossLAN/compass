@@ -127,7 +127,7 @@ fn mesh_plan(mesh: &Mesh) -> MeshPlan {
 
     MeshPlan {
         addresses: mesh.addresses.clone(),
-        prefixes: mesh.netmap.network.prefixes(),
+        prefixes: mesh.routed.clone(),
         inbound,
         exit_clients: mesh
             .netmap

@@ -182,7 +182,7 @@ impl Engine {
             ice_peers.into_values().collect(),
             view.meshes
                 .iter()
-                .flat_map(|mesh| mesh.netmap.network.prefixes())
+                .flat_map(|mesh| mesh.routed.iter().copied())
                 .collect(),
         );
 

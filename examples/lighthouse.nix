@@ -32,8 +32,8 @@ in
         # allows, and clients answer every other name in them with NXDOMAIN. Unlike the rest of
         # this section, zones can change on reload.
         zones = [ "home.arpa" ];
-        # Both are required: every node gets one address from each. Tailscale uses these
-        # ranges too; pick others on hosts that also run it.
+        # Both are required: every node gets one address from each. Tailscale uses this
+        # IPv4 range too; pick an RFC 1918 one on hosts that also run it.
         ipv4 = "100.64.0.0/10";
         ipv6 = "fd26:d40f:838e::/48";
         mtu = 1280;
