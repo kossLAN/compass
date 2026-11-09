@@ -35,7 +35,7 @@ in
         # Both are required: every node gets one address from each. Tailscale uses these
         # ranges too; pick others on hosts that also run it.
         ipv4 = "100.64.0.0/10";
-        ipv6 = "fd7a:115c:a1e0::/48";
+        ipv6 = "fd26:d40f:838e::/48";
         mtu = 1280;
       };
 

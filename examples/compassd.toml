@@ -98,7 +98,7 @@ domain = "mesh.internal"
 zones = ["home.arpa"]
 # Both are required: every node gets one address from each.
 ipv4 = "100.64.0.0/10"
-ipv6 = "fd7a:115c:a1e0::/48"
+ipv6 = "fd26:d40f:838e::/48"
 
 [lighthouse.hub]
 # Answers STUN, so nodes learn their public address. Relayed traffic goes through the API.
