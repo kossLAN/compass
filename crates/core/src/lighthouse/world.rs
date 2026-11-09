@@ -36,7 +36,6 @@ impl World {
         liveness: &Liveness,
     ) -> Self {
         let nodes = registry.nodes().clone();
-        let names = Names::resolve(&nodes, &config);
         let subjects: Vec<Subject<'_>> = nodes
             .values()
             .map(|node| {
@@ -52,6 +51,7 @@ impl World {
             })
             .collect();
         let access = compile(&config.policy, &subjects);
+        let names = Names::resolve(&nodes, &access, &config);
         let tokens = nodes
             .values()
             .map(|node| (node.token_hash, node.id))

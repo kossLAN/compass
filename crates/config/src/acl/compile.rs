@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use compass_proto::{Addresses, NodeId, PacketRule};
+use compass_proto::{Addresses, DnsName, NodeId, PacketRule};
 use ipnet::IpNet;
 
-use crate::acl::{Policy, Selector, Tag};
+use crate::acl::{NamePattern, Policy, Selector, Tag};
 
 #[derive(Debug, Clone)]
 pub struct Subject<'a> {
@@ -20,6 +20,13 @@ pub struct NodeAccess {
     pub inbound: Vec<PacketRule>,
     pub exit_nodes: BTreeSet<NodeId>,
     pub exit_clients: BTreeSet<IpNet>,
+    pub dns: BTreeSet<NamePattern>,
+}
+
+impl NodeAccess {
+    pub fn may_publish(&self, name: &DnsName, fqdn: &DnsName) -> bool {
+        self.dns.iter().any(|pattern| pattern.matches(name, fqdn))
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -54,7 +61,11 @@ pub fn compile(policy: &Policy, subjects: &[Subject<'_>]) -> Compiled {
         let select = |selectors: &[Selector]| -> Vec<&Subject<'_>> {
             subjects
                 .iter()
-                .filter(|subject| selectors.iter().any(|s| policy.matches(s, subject)))
+                .filter(|subject| {
+                    selectors
+                        .iter()
+                        .any(|s| policy.matches(s, subject.owner, subject.tags))
+                })
                 .collect()
         };
         let sources = select(&rule.src);
@@ -97,6 +108,11 @@ pub fn compile(policy: &Policy, subjects: &[Subject<'_>]) -> Compiled {
                     access.exit_clients.extend(source.addresses.host_nets());
                 }
             }
+        }
+
+        for source in &sources {
+            let access = nodes.entry(source.id).or_default();
+            access.dns.extend(rule.dns.iter().cloned());
         }
     }
 

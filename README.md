@@ -10,8 +10,8 @@ Machines connect to each other directly whenever they can.
 - **Stateless.** Neither the client nor the lighthouse writes state to disk. Addresses and
   hostnames are derived from each node's key, so every lighthouse agrees on them, and a
   restarted lighthouse gets its nodes back as they register again.
-- **Built-in DNS.** Every node gets a name under the mesh domain and can publish its own A, AAAA
-  and CNAME records to a lighthouse.
+- **Built-in DNS.** Every node gets a name under the mesh domain and can publish A, AAAA and
+  CNAME records to a lighthouse, for the names the ACL allows.
 - **NAT traversal.** Peers talk directly when hole punching works, and relay through a
   lighthouse when it doesn't. Relayed packets are still WireGuard-encrypted between the two
   peers, so the lighthouse only forwards them.

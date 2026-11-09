@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use compass_config::{KeyConfig, LighthouseConfig, NamePattern};
+use compass_config::acl::{Compiled, NamePattern};
+use compass_config::{KeyConfig, LighthouseConfig};
 use compass_proto::{
     CnameTarget, DnsName, DnsRecord, MAX_LABEL_LEN, NodeId, RecordData, RecordKind, RecordState,
     RecordStatus, RejectReason,
@@ -14,7 +15,11 @@ pub struct Names {
 }
 
 impl Names {
-    pub fn resolve(nodes: &BTreeMap<NodeId, Node>, config: &LighthouseConfig) -> Self {
+    pub fn resolve(
+        nodes: &BTreeMap<NodeId, Node>,
+        access: &Compiled,
+        config: &LighthouseConfig,
+    ) -> Self {
         let mut claims = Claims::default();
         let records = nodes
             .values()
@@ -22,7 +27,12 @@ impl Names {
                 let context = Context {
                     node,
                     nodes,
+                    access,
                     config,
+                    fqdn: node
+                        .hostname
+                        .join(&config.network.domain)
+                        .expect("hostnames always fit under the mesh domain"),
                 };
                 let statuses = unique(&node.info.records)
                     .map(|record| {
@@ -91,10 +101,10 @@ fn candidates(requested: &DnsName, id: NodeId) -> impl Iterator<Item = DnsName> 
 fn reserved_hostnames(config: &LighthouseConfig, own: &str) -> BTreeSet<DnsName> {
     let domain = &config.network.domain;
     let claimed = |key: &KeyConfig| -> BTreeSet<DnsName> {
-        key.dns
-            .iter()
+        config
+            .dns_names(key)
             .filter_map(|pattern| match pattern {
-                NamePattern::Any => None,
+                NamePattern::Any | NamePattern::BelowHostname => None,
                 NamePattern::Exact(name) | NamePattern::Below(name) => {
                     name.relative_to(domain)?.last_label().parse().ok()
                 },
@@ -128,7 +138,9 @@ struct Claims {
 struct Context<'a> {
     node: &'a Node,
     nodes: &'a BTreeMap<NodeId, Node>,
+    access: &'a Compiled,
     config: &'a LighthouseConfig,
+    fqdn: DnsName,
 }
 
 impl Context<'_> {
@@ -172,12 +184,10 @@ impl Context<'_> {
             }
         }
 
-        let permitted = mesh_name.is_some_and(|mesh_name| mesh_name.is_under(hostname))
-            || self
-                .config
-                .keys
-                .get(&self.node.key_name)
-                .is_some_and(|key| key.permits(&name));
+        let permitted = self
+            .access
+            .access(self.node.id)
+            .is_some_and(|access| access.may_publish(&name, &self.fqdn));
 
         if !permitted {
             return Err(RejectReason::NotPermitted);

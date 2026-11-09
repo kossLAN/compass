@@ -1,20 +1,23 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use compass_proto::{PortRange, Proto};
+use compass_proto::{DnsName, PortRange, Proto};
 use serde::Deserialize;
 
 use crate::acl::selector::validate_name;
-use crate::acl::{AclError, Selector, Subject, Tag};
+use crate::acl::{AclError, NamePattern, Selector, Tag};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuleConfig {
     pub src: Vec<Selector>,
+    #[serde(default)]
     pub dst: Vec<Selector>,
     #[serde(default)]
     pub proto: Option<Proto>,
     #[serde(default)]
     pub ports: Vec<PortRange>,
+    #[serde(default)]
+    pub dns: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +26,7 @@ pub struct Rule {
     pub dst: Vec<Selector>,
     pub protos: Vec<Proto>,
     pub ports: Vec<PortRange>,
+    pub dns: Vec<NamePattern>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -35,6 +39,7 @@ impl Policy {
     pub fn new(
         groups: BTreeMap<String, Vec<String>>,
         rules: Vec<RuleConfig>,
+        domain: &DnsName,
     ) -> Result<Self, AclError> {
         let groups = groups
             .into_iter()
@@ -43,7 +48,7 @@ impl Policy {
         let rules = rules
             .into_iter()
             .enumerate()
-            .map(|(index, rule)| validate_rule(&groups, index, rule))
+            .map(|(index, rule)| validate_rule(&groups, domain, index, rule))
             .collect::<Result<_, _>>()?;
         Ok(Self { groups, rules })
     }
@@ -63,14 +68,25 @@ impl Policy {
             .collect()
     }
 
-    pub(crate) fn matches(&self, selector: &Selector, subject: &Subject<'_>) -> bool {
+    pub(crate) fn dns_names<'a>(
+        &'a self,
+        owner: Option<&'a str>,
+        tags: &'a [Tag],
+    ) -> impl Iterator<Item = &'a NamePattern> {
+        self.rules
+            .iter()
+            .filter(move |rule| rule.src.iter().any(|s| self.matches(s, owner, tags)))
+            .flat_map(|rule| &rule.dns)
+    }
+
+    pub(crate) fn matches(&self, selector: &Selector, owner: Option<&str>, tags: &[Tag]) -> bool {
         match selector {
             Selector::All => true,
-            Selector::User(user) => subject.owner == Some(user.as_str()),
-            Selector::Group(group) => subject
-                .owner
-                .is_some_and(|owner| self.groups.get(group).is_some_and(|m| m.contains(owner))),
-            Selector::Tag(tag) => subject.tags.contains(tag),
+            Selector::User(user) => owner == Some(user.as_str()),
+            Selector::Group(group) => {
+                owner.is_some_and(|owner| self.groups.get(group).is_some_and(|m| m.contains(owner)))
+            },
+            Selector::Tag(tag) => tags.contains(tag),
             Selector::Internet => false,
         }
     }
@@ -99,13 +115,22 @@ fn validate_group(
 
 fn validate_rule(
     groups: &BTreeMap<String, BTreeSet<String>>,
+    domain: &DnsName,
     index: usize,
     rule: RuleConfig,
 ) -> Result<Rule, AclError> {
     let invalid = |reason| AclError::InvalidRule { index, reason };
 
-    if rule.src.is_empty() || rule.dst.is_empty() {
-        return Err(invalid("src and dst must not be empty"));
+    if rule.src.is_empty() {
+        return Err(invalid("src must not be empty"));
+    }
+
+    if rule.dst.is_empty() && rule.dns.is_empty() {
+        return Err(invalid("rules need a dst, dns or both"));
+    }
+
+    if rule.dst.is_empty() && (rule.proto.is_some() || !rule.ports.is_empty()) {
+        return Err(invalid("proto and ports need a dst"));
     }
 
     for selector in rule.src.iter().chain(&rule.dst) {
@@ -133,10 +158,18 @@ fn validate_rule(
         (None, true) => Vec::new(),
     };
 
+    let dns = rule
+        .dns
+        .iter()
+        .map(|pattern| NamePattern::parse(pattern, domain))
+        .collect::<Result<_, _>>()
+        .map_err(|error| AclError::InvalidName { index, error })?;
+
     Ok(Rule {
         src: rule.src,
         dst: rule.dst,
         protos,
         ports: rule.ports,
+        dns,
     })
 }

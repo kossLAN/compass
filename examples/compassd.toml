@@ -33,9 +33,9 @@ url = "https://lh1.example.com:8443"
 # Resolve this mesh's names through a stub registered with resolvconf.
 accept = true
 
-# Records this node publishes in the lighthouse's mesh, as <name>.mesh.internal. Names below
-# the hostname are always allowed; others need the pre-auth key's `dns` patterns (here
-# lighthouse.keys.laptops allows *.alice and *.home.arpa.).
+# Records this node publishes in the lighthouse's mesh, as <name>.mesh.internal. The
+# lighthouse's acl decides which names it may claim (here alice's nodes may claim names
+# below their hostname, *.alice and *.home.arpa.).
 [[client.lighthouses.dns.records]]
 name = "grafana.laptop"
 type = "CNAME"
@@ -47,7 +47,7 @@ type = "A"
 value = "192.168.1.20"
 
 # With `zone`, the record goes into one of the lighthouse's zones as <name>.<zone> instead, and
-# `name = "@"` is the zone itself. Only the key's `dns` patterns can allow it.
+# `name = "@"` is the zone itself.
 [[client.lighthouses.dns.records]]
 zone = "home.arpa"
 name = "printer"
@@ -92,9 +92,9 @@ tls_key_file = "/var/lib/acme/lh1.example.com/key.pem"
 [lighthouse.network]
 # Peers resolve each other as <hostname>.mesh.internal.
 domain = "mesh.internal"
-# More zones the mesh answers for. Nodes publish records in them as their key's `dns` patterns
-# allow, and clients answer every other name in them with NXDOMAIN. Unlike the rest of this
-# section, zones can change on reload.
+# More zones the mesh answers for. Nodes publish records in them as the acl allows, and
+# clients answer every other name in them with NXDOMAIN. Unlike the rest of this section, zones
+# can change on reload.
 zones = ["home.arpa"]
 # Both are required: every node gets one address from each.
 ipv4 = "100.64.0.0/10"
@@ -118,9 +118,6 @@ revoked = []
 secret_file = "/run/secrets/compass-laptops"
 owner = "alice"
 tags = ["tag:laptop"]
-# Besides `<hostname>` and `*.<hostname>`, nodes with this key may claim these names. Names
-# are under the mesh domain unless they end in a dot.
-dns = ["*.alice", "*.home.arpa."]
 
 [lighthouse.keys.ci]
 secret_file = "/run/secrets/compass-ci"
@@ -137,7 +134,9 @@ exit_node = true
 [lighthouse.groups]
 admins = ["alice"]
 
-# Default deny. Each rule allows `src` to reach `dst`; replies are always allowed.
+# Default deny. Each rule lets `src` reach `dst`, with replies always allowed, and publish
+# records for the names in `dns`. Names are under the mesh domain unless they end in a dot, and
+# "*.{hostname}" is everything below the node's own hostname.
 [[lighthouse.acl]]
 src = ["group:admins"]
 dst = ["*"]
@@ -157,3 +156,16 @@ proto = "icmp"
 [[lighthouse.acl]]
 src = ["group:admins"]
 dst = ["autogroup:internet"]
+
+# Every node may publish records below its hostname, like grafana.laptop.
+[[lighthouse.acl]]
+src = ["*"]
+dns = ["*.{hostname}"]
+
+[[lighthouse.acl]]
+src = ["alice"]
+dns = ["*.alice", "*.home.arpa."]
+
+[[lighthouse.acl]]
+src = ["tag:web"]
+dns = ["status"]

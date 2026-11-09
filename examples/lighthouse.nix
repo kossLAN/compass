@@ -28,9 +28,9 @@ in
       network = {
         # Peers resolve each other as <hostname>.mesh.internal.
         domain = "mesh.internal";
-        # More zones the mesh answers for. Nodes publish records in them as their key's `dns`
-        # patterns allow, and clients answer every other name in them with NXDOMAIN. Unlike
-        # the rest of this section, zones can change on reload.
+        # More zones the mesh answers for. Nodes publish records in them as the acl
+        # allows, and clients answer every other name in them with NXDOMAIN. Unlike the rest of
+        # this section, zones can change on reload.
         zones = [ "home.arpa" ];
         # Both are required: every node gets one address from each. Tailscale uses these
         # ranges too; pick others on hosts that also run it.
@@ -58,16 +58,11 @@ in
       # Pre-auth keys. Each secret_file holds a secret created with `compass authkey`; clients
       # present the same secret. Removing a key removes its nodes.
       keys = {
-        # Alice's devices. Besides <hostname> and *.<hostname>, they may claim *.alice, and
-        # names in the home.arpa zone. Names are under the mesh domain unless they end in a dot.
+        # Alice's devices.
         laptops = {
           secret_file = "/run/secrets/compass-laptops";
           owner = "alice";
           tags = [ "tag:laptop" ];
-          dns = [
-            "*.alice"
-            "*.home.arpa."
-          ];
         };
         # CI runners without key files: every run is a new node. Each logs out when it ends,
         # and one that crashes is removed after 10 minutes offline.
@@ -76,11 +71,10 @@ in
           tags = [ "tag:ci" ];
           offline_ttl = "10m";
         };
-        # A web server that may also claim the name "status" and act as an exit node.
+        # A web server that may act as an exit node.
         web = {
           secret_file = "/run/secrets/compass-web";
           tags = [ "tag:web" ];
-          dns = [ "status" ];
           exit_node = true;
         };
       };
@@ -96,6 +90,8 @@ in
 
       # Default deny: each rule lets `src` reach `dst`, and replies are always allowed.
       # Without `proto`, ports apply to TCP and UDP; without `ports`, every port is open.
+      # `dns` lets `src` publish records for these names. Names are under the mesh domain
+      # unless they end in a dot, and "*.{hostname}" is everything below the node's hostname.
       acl = [
         {
           src = [ "group:admins" ];
@@ -129,6 +125,23 @@ in
         {
           src = [ "group:admins" ];
           dst = [ "autogroup:internet" ];
+        }
+        # Every node may publish records below its hostname, like grafana.laptop.
+        {
+          src = [ "*" ];
+          dns = [ "*.{hostname}" ];
+        }
+        # Alice's devices may also claim *.alice, and names in the home.arpa zone.
+        {
+          src = [ "alice" ];
+          dns = [
+            "*.alice"
+            "*.home.arpa."
+          ];
+        }
+        {
+          src = [ "tag:web" ];
+          dns = [ "status" ];
         }
       ];
     };

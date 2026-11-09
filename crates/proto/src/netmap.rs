@@ -146,7 +146,7 @@ pub enum RejectReason {
 impl fmt::Display for RejectReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::NotPermitted => "not permitted by the node's key",
+            Self::NotPermitted => "not allowed by the lighthouse's acl",
             Self::OwnedByOther => "owned by another node",
             Self::Taken => "already claimed by another node",
             Self::CnameConflict => "a CNAME cannot coexist with other records",

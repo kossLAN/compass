@@ -7,14 +7,12 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use compass_proto::{
-    DnsError, DnsName, MAX_LABEL_LEN, MAX_NAME_LEN, Network, PublicKey, SecretHash,
-};
+use compass_proto::{MAX_LABEL_LEN, MAX_NAME_LEN, Network, PublicKey, SecretHash};
 use jiff::{Span, SpanRelativeTo};
 
 use self::raw::{RawApi, RawHub, RawKey, RawNetwork, RawNodes};
 use crate::ConfigError;
-use crate::acl::{Policy, Selector, Tag};
+use crate::acl::{NamePattern, Policy, Selector, Tag};
 use crate::secret::read_secret;
 
 const MIN_SECRET_LEN: usize = 32;
@@ -61,14 +59,6 @@ pub struct KeyConfig {
     pub tags: Vec<Tag>,
     pub offline_ttl: Duration,
     pub exit_node: bool,
-    pub dns: Vec<NamePattern>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NamePattern {
-    Any,
-    Exact(DnsName),
-    Below(DnsName),
 }
 
 impl LighthouseConfig {
@@ -109,11 +99,12 @@ impl LighthouseConfig {
             .keys
             .into_iter()
             .map(|(name, key)| {
-                let key = KeyConfig::from_raw(&name, key, default_ttl, &network.domain)?;
+                let key = KeyConfig::from_raw(&name, key, default_ttl)?;
                 Ok((name, key))
             })
             .collect::<Result<BTreeMap<_, _>, ConfigError>>()?;
         ensure_unique_secrets(&keys)?;
+        let policy = Policy::new(raw.groups, raw.acl, &network.domain)?;
 
         Ok(Self {
             api: ApiConfig::from_raw(raw.api)?,
@@ -121,7 +112,7 @@ impl LighthouseConfig {
             hub: HubConfig::from_raw(raw.hub)?,
             nodes,
             keys,
-            policy: Policy::new(raw.groups, raw.acl)?,
+            policy,
         })
     }
 
@@ -130,6 +121,10 @@ impl LighthouseConfig {
             .iter()
             .find(|(_, key)| key.secret == *secret)
             .map(|(name, key)| (name.as_str(), key))
+    }
+
+    pub fn dns_names<'a>(&'a self, key: &'a KeyConfig) -> impl Iterator<Item = &'a NamePattern> {
+        self.policy.dns_names(key.owner.as_deref(), &key.tags)
     }
 
     pub fn unknown_tags(&self) -> Vec<&Tag> {
@@ -267,12 +262,7 @@ fn parse_ttl(field: impl Into<String>, raw: &str) -> Result<Duration, ConfigErro
 }
 
 impl KeyConfig {
-    fn from_raw(
-        name: &str,
-        raw: RawKey,
-        default_ttl: Duration,
-        domain: &DnsName,
-    ) -> Result<Self, ConfigError> {
+    fn from_raw(name: &str, raw: RawKey, default_ttl: Duration) -> Result<Self, ConfigError> {
         let field = |suffix: &str| format!("lighthouse.keys.{name}{suffix}");
         let valid_name = name
             .bytes()
@@ -303,13 +293,6 @@ impl KeyConfig {
             ));
         }
 
-        let dns = raw
-            .dns
-            .iter()
-            .map(|pattern| NamePattern::parse(pattern, domain))
-            .collect::<Result<_, _>>()
-            .map_err(|error| ConfigError::invalid(field(".dns"), format!("{error}")))?;
-
         let offline_ttl = match &raw.offline_ttl {
             Some(ttl) => parse_ttl(field(".offline_ttl"), ttl)?,
             None => default_ttl,
@@ -321,44 +304,6 @@ impl KeyConfig {
             tags: raw.tags,
             offline_ttl,
             exit_node: raw.exit_node,
-            dns,
-        })
-    }
-
-    pub fn permits(&self, name: &DnsName) -> bool {
-        self.dns.iter().any(|pattern| pattern.matches(name))
-    }
-}
-
-impl NamePattern {
-    pub fn matches(&self, name: &DnsName) -> bool {
-        match self {
-            Self::Any => true,
-            Self::Exact(exact) => name == exact,
-            Self::Below(parent) => name.is_under(parent),
-        }
-    }
-
-    /// Patterns with a trailing dot are absolute; the rest are relative to `domain`.
-    pub fn parse(pattern: &str, domain: &DnsName) -> Result<Self, DnsError> {
-        let pattern = pattern.trim();
-
-        if pattern == "*" {
-            return Ok(Self::Any);
-        }
-
-        let (below, name) = pattern
-            .strip_prefix("*.")
-            .map_or((false, pattern), |parent| (true, parent));
-        let name = match name.strip_suffix('.') {
-            Some(absolute) => absolute.parse()?,
-            None => name.parse::<DnsName>()?.join(domain)?,
-        };
-
-        Ok(if below {
-            Self::Below(name)
-        } else {
-            Self::Exact(name)
         })
     }
 }

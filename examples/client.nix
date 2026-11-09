@@ -33,8 +33,8 @@
               # Resolve this mesh's names through a stub registered with resolvconf.
               accept = true;
               # Records this node publishes in the lighthouse's mesh, as
-              # <name>.mesh.internal. Names below the hostname are always allowed; others need
-              # the pre-auth key's `dns` patterns (here keys.laptops allows *.alice and
+              # <name>.mesh.internal. The lighthouse's acl decides which names it may
+              # claim (here alice's nodes may claim names below their hostname, *.alice and
               # *.home.arpa.).
               records = [
                 {
@@ -60,8 +60,7 @@
                   value = "2001:db8::20";
                 }
                 # With `zone`, the record goes into one of the lighthouse's zones as
-                # <name>.<zone> instead, and `name = "@"` is the zone itself. Only the key's
-                # `dns` patterns can allow it.
+                # <name>.<zone> instead, and `name = "@"` is the zone itself.
                 {
                   zone = "home.arpa";
                   name = "printer";

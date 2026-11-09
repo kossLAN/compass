@@ -90,8 +90,6 @@ pub struct RawKey {
     pub offline_ttl: Option<String>,
     #[serde(default)]
     pub exit_node: bool,
-    #[serde(default)]
-    pub dns: Vec<String>,
 }
 
 const fn default_mtu() -> u16 {

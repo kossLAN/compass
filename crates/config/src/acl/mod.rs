@@ -1,8 +1,12 @@
 mod compile;
+mod names;
 mod policy;
 mod selector;
 
+use compass_proto::DnsError;
+
 pub use compile::{Compiled, NodeAccess, Subject, compile};
+pub use names::NamePattern;
 pub use policy::{Policy, RuleConfig};
 pub use selector::{Selector, Tag};
 
@@ -18,4 +22,6 @@ pub enum AclError {
     UnknownGroup(String),
     #[error("acl rule #{}: {reason}", index + 1)]
     InvalidRule { index: usize, reason: &'static str },
+    #[error("acl rule #{}: {error}", index + 1)]
+    InvalidName { index: usize, error: DnsError },
 }
