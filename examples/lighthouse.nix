@@ -2,84 +2,66 @@
 #
 #   modules = [ compass.nixosModules.default ./lighthouse.nix ];
 #
-# Run as many lighthouses as you like: they keep no state, so every one runs this same
-# section, apart from the hub's endpoint and key, and clients register with all of them. To
-# put the lighthouse in the mesh too, add `settings.client` (see client.nix). Secrets are
-# given as plain paths; with agenix or sops-nix, use their `.path` instead.
-{ config, ... }:
-let
-  domain = "lh1.example.com";
-  certs = config.security.acme.certs.${domain}.directory;
-in
+# You can run several lighthouses for one mesh. They keep no state, so give them all this
+# same config, each with its own hub key, and list every one of them on the clients. To
+# put the lighthouse itself in the mesh, add `settings.client` (see client.nix) and list
+# its key under `nodes` like any other machine.
 {
   services.compass = {
     enable = true;
-    # Opens the API's TCP port, which also carries relayed traffic, and the hub's UDP port.
+    # Opens the hub's WireGuard port.
     openFirewall = true;
 
     settings.lighthouse = {
-      api = {
-        listen = "[::]:8443";
-        # Omit both when a reverse proxy terminates TLS. Reloading re-reads them.
-        tls_cert_file = "${certs}/fullchain.pem";
-        tls_key_file = "${certs}/key.pem";
-      };
-
       network = {
-        # Peers resolve each other as <hostname>.mesh.internal.
+        # Nodes find each other as <hostname>.mesh.internal.
         domain = "mesh.internal";
-        # More zones the mesh answers for. Nodes publish records in them as the acl
-        # allows, and clients answer every other name in them with NXDOMAIN. Unlike the rest of
-        # this section, zones can change on reload.
+        # Extra zones that nodes can publish records in, if the acl lets them. A name nobody
+        # has published still resolves the normal way, so a zone can sit on top of a real
+        # domain, and it can be the parent of the mesh domain. Zones can change on reload.
+        # The rest of this section needs a restart.
         zones = [ "home.arpa" ];
-        # Both are required: every node gets one address from each. Tailscale uses this
-        # IPv4 range too; pick an RFC 1918 one on hosts that also run it.
+        # Every node gets one address from each range, so both are required. Tailscale uses
+        # this IPv4 range too, so pick a private (RFC 1918) one if a machine runs both.
         ipv4 = "100.64.0.0/10";
         ipv6 = "fd26:d40f:838e::/48";
         mtu = 1280;
       };
 
       hub = {
-        # Answers STUN, so nodes learn their public address.
+        # The lighthouse's own WireGuard interface. Nodes connect to it to talk to the
+        # lighthouse, and only the keys listed under `nodes` get in.
+        interface = "compass-hub";
+        # UDP. Nodes also ask this port what their public address is.
         listen_port = 51820;
-        # How clients reach this port.
-        endpoint = "${domain}:51820";
-        # Created with `compass genkey`; when unset, a new key is generated on each start.
+        # Make one with `compass genkey`. Clients need its public key
+        # (`compass pubkey < file`).
         private_key_file = "/run/secrets/compass-hub.key";
       };
 
+      # The machines in the mesh. One whose key is not listed gets no answer at all, and
+      # deleting an entry removes that machine on the next reload. The name is only a label.
+      # `owner` and `tags` are what the acl below goes by. Public keys are not secret, so
+      # this list can live in your config repo.
       nodes = {
-        # Every node is removed once it has been offline this long; a key can override it.
-        offline_ttl = "30d";
-        # Public keys (shown by `compass status`) that may never register again.
-        revoked = [ "0D5zlRK6XORev2ICQb4hDebYYTP8edb4T0dPGDifChE=" ];
-      };
-
-      # Pre-auth keys. Each secret_file holds a secret created with `compass authkey`; clients
-      # present the same secret. Removing a key removes its nodes.
-      keys = {
-        # Alice's devices.
-        laptops = {
-          secret_file = "/run/secrets/compass-laptops";
+        laptop = {
+          public_key = "0D5zlRK6XORev2ICQb4hDebYYTP8edb4T0dPGDifChE=";
           owner = "alice";
           tags = [ "tag:laptop" ];
         };
-        # CI runners without key files: every run is a new node. Each logs out when it ends,
-        # and one that crashes is removed after 10 minutes offline.
-        ci = {
-          secret_file = "/run/secrets/compass-ci";
+        runner = {
+          public_key = "83BaEg3M6qOBBNn1+5A9aegDGREMbz0ZClKEyNCS2Vw=";
           tags = [ "tag:ci" ];
-          offline_ttl = "10m";
         };
-        # A web server that may act as an exit node.
+        # A web server that may be used as an exit node, if it offers to be one.
         web = {
-          secret_file = "/run/secrets/compass-web";
+          public_key = "jIneXXAKF+muwHfPDdYBKpy+8ABOzudJKsPsSAqGsE8=";
           tags = [ "tag:web" ];
           exit_node = true;
         };
       };
 
-      # Users are the `owner`s of keys.
+      # Groups of users. A user is whoever is named as the `owner` of a node.
       groups = {
         admins = [ "alice" ];
         devs = [
@@ -88,10 +70,11 @@ in
         ];
       };
 
-      # Default deny: each rule lets `src` reach `dst`, and replies are always allowed.
-      # Without `proto`, ports apply to TCP and UDP; without `ports`, every port is open.
-      # `dns` lets `src` publish records for these names. Names are under the mesh domain
-      # unless they end in a dot, and "*.{hostname}" is everything below the node's hostname.
+      # Nothing is allowed until a rule says so. A rule lets `src` open connections to `dst`,
+      # and replies always get back. Leave out `proto` and the ports cover TCP and UDP. Leave
+      # out `ports` and every port is open. `dns` lets `src` publish those names. They are
+      # under the mesh domain unless they end in a dot, and "*.{hostname}" means anything
+      # below the node's own hostname.
       acl = [
         {
           src = [ "group:admins" ];
@@ -121,17 +104,18 @@ in
           dst = [ "*" ];
           proto = "icmp";
         }
-        # Admins may send their internet traffic through any exit node they can reach.
+        # Admins can use any exit node they can reach.
         {
           src = [ "group:admins" ];
           dst = [ "autogroup:internet" ];
         }
-        # Every node may publish records below its hostname, like grafana.laptop.
+        # Every node can publish names below its own hostname, like grafana.laptop.
         {
           src = [ "*" ];
           dns = [ "*.{hostname}" ];
         }
-        # Alice's devices may also claim *.alice, and names in the home.arpa zone.
+        # Alice's machines can also take names under alice, and anything in the home.arpa
+        # zone.
         {
           src = [ "alice" ];
           dns = [
@@ -146,7 +130,4 @@ in
       ];
     };
   };
-
-  # Reload the lighthouse when the API certificate is renewed.
-  security.acme.certs.${domain}.reloadServices = [ "compassd" ];
 }

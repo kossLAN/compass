@@ -1,41 +1,38 @@
-# compassd runs a client, a lighthouse, or both: keep the sections this node needs. Neither
-# keeps state; everything is declared here. Reload with SIGHUP.
+# compassd can run a client, a lighthouse, or both. Keep the sections this machine needs and
+# delete the rest. Nothing is stored on disk, so this file is the whole setup. Send SIGHUP to
+# reload it.
 
-# Where `compass status` and other control clients reach the daemon.
+# The socket `compass status` and the other CLI commands talk to.
 [socket]
 path = "/run/compass/compass.sock"
-# Members may use the CLI without root.
+# Members of this group can use the CLI without root.
 group = "wheel"
 
 # ── Client ──────────────────────────────────────────────────────────────────────────────────
 
 [client]
-# Presented every time the daemon starts. Create one with `compass authkey`.
-auth_key_file = "/run/secrets/compass-laptops"
-# Defaults to the system hostname.
-hostname = "laptop"
-# Only needed when the lighthouses' certificate is not from a public CA.
-# ca_file = "/etc/compass/ca.pem"
-# The node's WireGuard key, its identity; create it with `compass genkey`. Without it the node
-# gets a new key on every start, registers as a new node and logs out when it stops, so give
-# such nodes a pre-auth key with a short offline_ttl.
+# This machine's WireGuard key. Make one with `compass genkey`, then give its public key
+# (`compass pubkey < file`) to whoever runs the lighthouse.
 private_key_file = "/run/secrets/compass-node.key"
+# The name other nodes know this machine by. Leave it out to use the system hostname.
+hostname = "laptop"
 
-# The node registers with every lighthouse. Lighthouses that share an auth key serve one mesh:
-# if one goes down, the others keep coordinating and relaying. Settings below apply to the
-# lighthouse's whole mesh; lighthouses of one mesh may each set them but must not disagree.
-# Without settings, a plain list works too:
-# lighthouses = ["https://lh1.example.com:8443", "https://lh2.example.com:8443"]
+# A lighthouse is set up like a WireGuard peer: where to reach it, and its hub's public key.
+# Every lighthouse you list belongs to the same mesh unless you give it a `mesh` name, so
+# listing two is how you get a spare.
 [[client.lighthouses]]
-url = "https://lh1.example.com:8443"
+endpoint = "lh1.example.com:51820"
+public_key = "QBOaPq4VcC/weEXCD8j3gJDzP2bmCb79WUVcllxn0hk="
 
+# The dns and exit_node settings apply to the whole mesh, not just this lighthouse. You can
+# repeat them on other lighthouses of the same mesh as long as they agree.
 [client.lighthouses.dns]
-# Resolve this mesh's names through a stub registered with resolvconf.
+# Resolve the mesh's names on this machine. compassd runs a small resolver for them and
+# registers it with resolvconf. On by default.
 accept = true
 
-# Records this node publishes in the lighthouse's mesh, as <name>.mesh.internal. The
-# lighthouse's acl decides which names it may claim (here alice's nodes may claim names
-# below their hostname, *.alice and *.home.arpa.).
+# Records this node adds to the mesh. A plain name goes under the mesh domain, so this one is
+# grafana.laptop.mesh.internal. The lighthouse's acl decides which names a node may take.
 [[client.lighthouses.dns.records]]
 name = "grafana.laptop"
 type = "CNAME"
@@ -46,8 +43,8 @@ name = "nas.alice"
 type = "A"
 value = "192.168.1.20"
 
-# With `zone`, the record goes into one of the lighthouse's zones as <name>.<zone> instead, and
-# `name = "@"` is the zone itself.
+# With `zone`, the record goes in one of the lighthouse's extra zones instead. This one is
+# printer.home.arpa. Use `name = "@"` for the zone itself.
 [[client.lighthouses.dns.records]]
 zone = "home.arpa"
 name = "printer"
@@ -55,88 +52,85 @@ type = "A"
 value = "192.168.1.30"
 
 [client.lighthouses.exit_node]
-# Send internet traffic through this peer of the mesh while a direct path to it is up; without
-# one the traffic is blocked rather than sent out unprotected. Only one mesh can set it.
-# `compass exit-node` overrides this until the daemon restarts or reloads.
+# Send this machine's internet traffic through another node. That only happens while there is
+# a direct path to it. If the path drops, the traffic is blocked rather than sent out the
+# normal way. Only one mesh can have an exit node, and `compass exit-node` overrides this
+# until the next restart or reload.
 peer = "web"
-# Offer this node as an exit node in the mesh; its pre-auth key needs `exit_node = true`.
+# Let other nodes use this machine as their exit node. The lighthouse also has to list it
+# with `exit_node = true`.
 advertise = false
 
-# The same mesh as lh1, so it publishes lh1's records and uses lh1's settings too.
+# A second lighthouse for the same mesh. It gets the records and settings given for lh1.
 [[client.lighthouses]]
-url = "https://lh2.example.com:8443"
+endpoint = "lh2.example.com:51820"
+public_key = "ZemVXzGDbiOIPQd8+KvX5kuWH8FY32UK8V3UKBsV0g8="
 
-# Another mesh, with its own key and settings. When two meshes answer for the same zone or
-# domain, this node keeps the one whose lighthouse is listed first.
+# A different mesh, because it has its own `mesh` name. If two meshes serve the same domain or
+# zone, the one listed first wins.
 [[client.lighthouses]]
-url = "https://lh.work.example:8443"
-auth_key_file = "/run/secrets/compass-work"
+endpoint = "lh.work.example:51820"
+public_key = "HwT2lNrnPcBbmfjA5NUgbP5uh5X4Sz5R+DGsJT6AYRc="
+mesh = "work"
 dns = { accept = false }
 
 [client.interface]
-# The node's only WireGuard interface, for direct and relayed peers alike.
+# One WireGuard interface carries everything: the lighthouses and every peer, direct or relayed.
 name = "bh0"
 listen_port = 51821
-# Addresses of these interfaces are never offered to peers; a trailing `*` matches any suffix.
+# Interfaces whose addresses are never offered to peers as a way to reach this machine. A
+# trailing `*` matches anything.
 exclude = ["docker*", "br-*", "veth*", "virbr*"]
 
 # ── Lighthouse ──────────────────────────────────────────────────────────────────────────────
-# Every lighthouse of a mesh runs the same section, apart from the hub's endpoint and key.
-
-[lighthouse.api]
-listen = "[::]:8443"
-# Omit both when a reverse proxy terminates TLS.
-tls_cert_file = "/var/lib/acme/lh1.example.com/fullchain.pem"
-tls_key_file = "/var/lib/acme/lh1.example.com/key.pem"
+# Every lighthouse of a mesh runs this same section. Only the hub's key differs.
 
 [lighthouse.network]
-# Peers resolve each other as <hostname>.mesh.internal.
+# Nodes find each other as <hostname>.mesh.internal.
 domain = "mesh.internal"
-# More zones the mesh answers for. Nodes publish records in them as the acl allows, and
-# clients answer every other name in them with NXDOMAIN. Unlike the rest of this section, zones
-# can change on reload.
+# Extra zones that nodes can publish records in, if the acl lets them. A name nobody has
+# published still resolves the normal way, so a zone can sit on top of a real domain, and it
+# can be the parent of the mesh domain. Zones can change on reload. The rest of this section
+# needs a restart.
 zones = ["home.arpa"]
-# Both are required: every node gets one address from each.
+# Every node gets one address from each range, so both are required.
 ipv4 = "100.64.0.0/10"
 ipv6 = "fd26:d40f:838e::/48"
 
 [lighthouse.hub]
-# Answers STUN, so nodes learn their public address. Relayed traffic goes through the API.
+# The lighthouse's own WireGuard interface. Nodes connect to it to talk to the lighthouse, and
+# only the keys listed under `nodes` get in.
+interface = "compass-hub"
+# UDP. Nodes also ask this port what their public address is.
 listen_port = 51820
-# How nodes reach this port.
-endpoint = "lh1.example.com:51820"
+# Make one with `compass genkey`. Clients need its public key (`compass pubkey < file`).
+private_key_file = "/run/secrets/compass-hub.key"
 
-[lighthouse.nodes]
-# Every node is removed once it has been offline this long; a key can override it.
-offline_ttl = "30d"
-# Public keys (shown by `compass status`) that may never register again.
-revoked = []
-
-# Pre-auth keys. Create a secret with `compass authkey` and point `secret_file` at it. Clients
-# log in with the same secret.
-[lighthouse.keys.laptops]
-secret_file = "/run/secrets/compass-laptops"
+# The machines in the mesh. One whose key is not listed gets no answer at all, and deleting an
+# entry removes that machine on the next reload. The name is only a label. `owner` and `tags`
+# are what the acl below goes by.
+[lighthouse.nodes.laptop]
+public_key = "0D5zlRK6XORev2ICQb4hDebYYTP8edb4T0dPGDifChE="
 owner = "alice"
 tags = ["tag:laptop"]
 
-[lighthouse.keys.ci]
-secret_file = "/run/secrets/compass-ci"
+[lighthouse.nodes.runner]
+public_key = "83BaEg3M6qOBBNn1+5A9aegDGREMbz0ZClKEyNCS2Vw="
 tags = ["tag:ci"]
-# Runners without key files are new nodes each run; clean up the ones that crash quickly.
-offline_ttl = "10m"
 
-[lighthouse.keys.servers]
-secret_file = "/run/secrets/compass-servers"
+[lighthouse.nodes.web]
+public_key = "jIneXXAKF+muwHfPDdYBKpy+8ABOzudJKsPsSAqGsE8="
 tags = ["tag:web"]
-# Nodes with this key may offer themselves as exit nodes.
+# This machine may be used as an exit node, if it offers to be one.
 exit_node = true
 
 [lighthouse.groups]
 admins = ["alice"]
 
-# Default deny. Each rule lets `src` reach `dst`, with replies always allowed, and publish
-# records for the names in `dns`. Names are under the mesh domain unless they end in a dot, and
-# "*.{hostname}" is everything below the node's own hostname.
+# Nothing is allowed until a rule says so. A rule lets `src` open connections to `dst`, and
+# replies always get back. `dns` lets `src` publish those names. They are under the mesh
+# domain unless they end in a dot, and "*.{hostname}" means anything below the node's own
+# hostname.
 [[lighthouse.acl]]
 src = ["group:admins"]
 dst = ["*"]
@@ -152,16 +146,17 @@ src = ["*"]
 dst = ["*"]
 proto = "icmp"
 
-# Admins may send their internet traffic through any exit node they can reach.
+# Admins can use any exit node they can reach.
 [[lighthouse.acl]]
 src = ["group:admins"]
 dst = ["autogroup:internet"]
 
-# Every node may publish records below its hostname, like grafana.laptop.
+# Every node can publish names below its own hostname, like grafana.laptop.
 [[lighthouse.acl]]
 src = ["*"]
 dns = ["*.{hostname}"]
 
+# Alice's machines can also take names under alice, and anything in the home.arpa zone.
 [[lighthouse.acl]]
 src = ["alice"]
 dns = ["*.alice", "*.home.arpa."]
