@@ -18,6 +18,7 @@ pub fn request(transaction: [u8; 12]) -> Vec<u8> {
     message.raw
 }
 
+#[cfg(feature = "linux")]
 pub fn response(request: &[u8], mapped: SocketAddr) -> Option<Vec<u8>> {
     let mut message = Message::new();
     message.unmarshal_binary(request).ok()?;

@@ -3,14 +3,12 @@ mod hosted;
 mod linux;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::time::SystemTime;
 
 use compass_net::{DeviceState, MeshRules, NetError, PeerOp, PeerSpec, Stun, plan_peers};
 use compass_proto::{NodeId, PacketRule, PrivateKey, PublicKey};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
-use reqwest::Certificate;
-use url::Url;
 
 pub use self::hosted::{HostedPlatform, TunProvider, TunShape, Underlying};
 #[cfg(feature = "linux")]
@@ -27,11 +25,25 @@ pub enum DataplaneError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
+    pub control: Ipv6Addr,
+    pub hubs: Vec<HubPlan>,
     pub meshes: Vec<MeshPlan>,
     pub mtu: u16,
     pub peers: Vec<PeerPlan>,
     pub exit: Option<ExitPlan>,
     pub local_dns: Option<IpAddr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HubPlan {
+    pub key: PublicKey,
+    pub endpoint: Option<SocketAddr>,
+}
+
+impl HubPlan {
+    pub fn address(&self) -> IpNet {
+        IpNet::from(IpAddr::V6(NodeId::of(&self.key).control_address()))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,7 +77,6 @@ pub enum Path {
 pub struct ExitPlan {
     pub peer: Option<PublicKey>,
     pub sources: Vec<IpAddr>,
-    pub bypass: Vec<IpAddr>,
 }
 
 impl Plan {
@@ -78,6 +89,7 @@ impl Plan {
             .meshes
             .iter()
             .flat_map(|mesh| mesh.addresses.iter().copied())
+            .chain([IpAddr::V6(self.control)])
             .collect();
         addresses.into_iter().map(IpNet::from).collect()
     }
@@ -106,6 +118,12 @@ impl Plan {
                     keepalive: if peer.keepalive { KEEPALIVE } else { 0 },
                 }
             })
+            .chain(self.hubs.iter().map(|hub| PeerSpec {
+                key: hub.key,
+                endpoint: hub.endpoint,
+                allowed_ips: vec![hub.address()],
+                keepalive: KEEPALIVE,
+            }))
             .collect()
     }
 
@@ -195,7 +213,7 @@ pub trait Backend: Send + Sync {
         Ok(())
     }
 
-    async fn update_dns(&mut self, _meshes: &[Mesh], _lighthouses: &BTreeMap<usize, Url>) {}
+    async fn update_dns(&mut self, _meshes: &[Mesh], _lighthouses: &BTreeMap<usize, String>) {}
 }
 
 #[async_trait::async_trait]
@@ -203,10 +221,6 @@ pub trait Platform: Send + Sync + 'static {
     type Device: PartialEq + Send + Sync + 'static;
 
     async fn local_networks(&self, device: &Self::Device) -> Option<LocalNetworks>;
-
-    fn roots(&self) -> Option<&[Certificate]> {
-        None
-    }
 
     async fn start(
         &self,

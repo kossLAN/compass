@@ -1,14 +1,15 @@
 mod control;
 mod ctl;
 
-use std::io::{self, Write as _};
+use std::io::{self, BufRead as _, Write as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use crate::control::Control;
 use clap::{Args, Parser, Subcommand};
 use compass_config::DEFAULT_SOCKET;
-use compass_proto::{AuthKey, DnsName, ExitNodeChoice, PrivateKey};
+use compass_proto::{DnsName, ExitNodeChoice, PrivateKey};
+use zeroize::Zeroizing;
 
 #[derive(Parser)]
 #[command(
@@ -51,8 +52,8 @@ enum Command {
     },
     #[command(about = "Generate a WireGuard private key for a node or a hub")]
     Genkey,
-    #[command(about = "Generate a pre-auth key secret")]
-    Authkey,
+    #[command(about = "Read a private key on stdin and print its public key")]
+    Pubkey,
 }
 
 #[derive(Args)]
@@ -111,8 +112,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             writeln!(io::stdout().lock(), "{}", key.as_str())?;
             Ok(())
         },
-        Command::Authkey => {
-            writeln!(io::stdout().lock(), "{}", AuthKey::generate().expose())?;
+        Command::Pubkey => {
+            let mut key = Zeroizing::new(String::new());
+            io::stdin().lock().read_line(&mut key)?;
+            let key = PrivateKey::from_base64(&key)?;
+            writeln!(io::stdout().lock(), "{}", key.public_key())?;
             Ok(())
         },
     }

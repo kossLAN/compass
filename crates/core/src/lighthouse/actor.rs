@@ -3,25 +3,18 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use compass_config::LighthouseConfig;
-use compass_proto::{
-    LONG_POLL, NodeId, NodeInfo, PublicKey, RegisterRequest, RegisterResponse, Token,
-};
+use compass_proto::{LONG_POLL, NodeId, NodeInfo};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
-use crate::lighthouse::registry::{ReconcileReport, RegisterError, Registry};
+use crate::lighthouse::registry::{AnnounceError, ReconcileReport, Registry};
 use crate::lighthouse::world::{Liveness, World};
 
 const TICK: Duration = Duration::from_secs(5);
 const ONLINE_AFTER_ACTIVITY: Duration = LONG_POLL.saturating_add(Duration::from_secs(40));
 
 enum Command {
-    Register(
-        RegisterRequest,
-        oneshot::Sender<Result<RegisterResponse, RegisterError>>,
-    ),
-    Update(NodeId, NodeInfo, oneshot::Sender<Result<(), RegisterError>>),
-    Logout(NodeId, oneshot::Sender<()>),
+    Announce(NodeId, NodeInfo, oneshot::Sender<Result<(), AnnounceError>>),
     Reload(Box<LighthouseConfig>, oneshot::Sender<ReconcileReport>),
 }
 
@@ -39,8 +32,8 @@ impl RegistryHandle {
         self.world.clone()
     }
 
-    pub fn authenticate(&self, token: &Token) -> Option<NodeId> {
-        self.world.borrow().authenticate(token)
+    pub fn lists(&self, id: NodeId) -> bool {
+        self.world.borrow().lists(id)
     }
 
     pub fn sees(&self, from: NodeId, to: NodeId) -> bool {
@@ -54,23 +47,10 @@ impl RegistryHandle {
             .insert(id, Instant::now());
     }
 
-    pub async fn register(
-        &self,
-        request: RegisterRequest,
-    ) -> Result<RegisterResponse, RegisterError> {
-        self.call(|reply| Command::Register(request, reply))
+    pub async fn announce(&self, id: NodeId, info: NodeInfo) -> Result<(), AnnounceError> {
+        self.call(|reply| Command::Announce(id, info, reply))
             .await
-            .unwrap_or(Err(RegisterError::Unavailable))
-    }
-
-    pub async fn update(&self, id: NodeId, info: NodeInfo) -> Result<(), RegisterError> {
-        self.call(|reply| Command::Update(id, info, reply))
-            .await
-            .unwrap_or(Err(RegisterError::Unavailable))
-    }
-
-    pub async fn logout(&self, id: NodeId) {
-        let _ = self.call(|reply| Command::Logout(id, reply)).await;
+            .unwrap_or(Err(AnnounceError::Unavailable))
     }
 
     pub async fn reload(&self, config: LighthouseConfig) -> Option<ReconcileReport> {
@@ -87,30 +67,25 @@ impl RegistryHandle {
 
 struct Actor {
     config: Arc<LighthouseConfig>,
-    hub_key: PublicKey,
     registry: Registry,
     presence: Presence,
-    last_active: HashMap<NodeId, Instant>,
     liveness: Liveness,
     world: watch::Sender<Arc<World>>,
 }
 
 pub fn spawn(
     config: Arc<LighthouseConfig>,
-    hub_key: PublicKey,
     cancel: CancellationToken,
 ) -> (RegistryHandle, tokio::task::JoinHandle<()>) {
     let registry = Registry::default();
     let liveness = Liveness::default();
-    let world = World::build(Arc::clone(&config), hub_key, &registry, &liveness);
+    let world = World::build(Arc::clone(&config), &registry, &liveness);
     let (world_sender, world_receiver) = watch::channel(Arc::new(world));
     let (commands, receiver) = mpsc::channel(64);
     let presence = Presence::default();
 
     let actor = Actor {
         config,
-        hub_key,
-        last_active: HashMap::new(),
         registry,
         presence: Arc::clone(&presence),
         liveness,
@@ -135,82 +110,46 @@ impl Actor {
             tokio::select! {
                 () = cancel.cancelled() => break,
                 Some(command) = commands.recv() => self.handle(command),
-                _ = tick.tick() => self.tick(),
+                _ = tick.tick() => self.refresh_liveness(),
             }
         }
     }
 
     fn handle(&mut self, command: Command) {
         match command {
-            Command::Register(request, reply) => {
-                let _ = reply.send(self.register(request));
-            },
-            Command::Update(id, info, reply) => {
-                let result = self.registry.update(&self.config, id, info);
-
-                if result == Ok(true) {
-                    self.publish();
-                }
-
-                let _ = reply.send(result.map(drop));
-            },
-            Command::Logout(id, reply) => {
-                if self.registry.remove(&self.config, id) {
-                    tracing::info!(node = %id, "node logged out");
-                    self.forget(id);
-                    self.publish();
-                }
-
-                let _ = reply.send(());
+            Command::Announce(id, info, reply) => {
+                let _ = reply.send(self.announce(id, info));
             },
             Command::Reload(config, reply) => {
                 self.config = Arc::new(*config);
                 let report = self.registry.reconcile(&self.config);
 
-                for id in &report.removed {
-                    self.forget(*id);
-                }
-
+                self.presence
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .retain(|id, _| !report.removed.contains(id));
                 self.publish();
                 let _ = reply.send(report);
             },
         }
     }
 
-    fn register(&mut self, request: RegisterRequest) -> Result<RegisterResponse, RegisterError> {
-        let (id, token) = self.registry.register(&self.config, request)?;
-        self.last_active.insert(id, Instant::now());
-        self.publish();
-        tracing::info!(node = %id, "node registered");
+    fn announce(&mut self, id: NodeId, info: NodeInfo) -> Result<(), AnnounceError> {
+        let joined = !self.registry.nodes().contains_key(&id);
 
-        let netmap = self
-            .world
-            .borrow()
-            .netmap(id)
-            .cloned()
-            .ok_or(RegisterError::Unavailable)?;
-        Ok(RegisterResponse {
-            node_id: id,
-            token,
-            netmap,
-        })
-    }
-
-    fn tick(&mut self) {
-        self.refresh_liveness();
-
-        if self.collect_offline() {
+        if self.registry.announce(&self.config, id, info)? {
             self.publish();
         }
+
+        if joined {
+            tracing::info!(node = self.config.nodes[&id].name, %id, "node joined");
+        }
+
+        Ok(())
     }
 
     fn publish(&self) {
-        let world = World::build(
-            Arc::clone(&self.config),
-            self.hub_key,
-            &self.registry,
-            &self.liveness,
-        );
+        let world = World::build(Arc::clone(&self.config), &self.registry, &self.liveness);
         self.world.send_replace(Arc::new(world));
     }
 
@@ -222,54 +161,22 @@ impl Actor {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
 
-        let mut liveness = Liveness::default();
-
-        for node in self.registry.nodes().values() {
-            let active = presence
-                .get(&node.id)
-                .is_some_and(|seen| now.duration_since(*seen) < ONLINE_AFTER_ACTIVITY);
-
-            if active {
-                liveness.online.insert(node.id);
-                self.last_active.insert(node.id, now);
-            }
-        }
+        let online = self
+            .registry
+            .nodes()
+            .keys()
+            .filter(|id| {
+                presence
+                    .get(id)
+                    .is_some_and(|seen| now.duration_since(*seen) < ONLINE_AFTER_ACTIVITY)
+            })
+            .copied()
+            .collect();
+        let liveness = Liveness { online };
 
         if liveness != self.liveness {
             self.liveness = liveness;
             self.publish();
         }
-    }
-
-    fn collect_offline(&mut self) -> bool {
-        let now = Instant::now();
-        let expired: Vec<NodeId> = self
-            .registry
-            .nodes()
-            .values()
-            .filter(|node| {
-                let active = self.last_active.get(&node.id);
-                self.config.keys.get(&node.key_name).is_none_or(|key| {
-                    active.is_none_or(|at| now.duration_since(*at) > key.offline_ttl)
-                })
-            })
-            .map(|node| node.id)
-            .collect();
-
-        for id in &expired {
-            tracing::info!(node = %id, "removing a node that has been offline too long");
-            self.registry.remove(&self.config, *id);
-            self.forget(*id);
-        }
-
-        !expired.is_empty()
-    }
-
-    fn forget(&mut self, id: NodeId) {
-        self.last_active.remove(&id);
-        self.presence
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
     }
 }

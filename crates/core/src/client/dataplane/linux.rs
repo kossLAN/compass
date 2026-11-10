@@ -9,19 +9,17 @@ use compass_net::{
 };
 use compass_proto::{PrivateKey, PublicKey};
 use ipnet::IpNet;
-use url::Url;
 
 use super::{
     Backend, DataplaneError, ExitPlan, LocalNetworks, MeshPlan, Plan, Platform, Stats,
     default_routes,
 };
+use crate::FWMARK;
 use crate::client::dns::DnsService;
 use crate::client::meshes::{Mesh, overlaps};
 
-const FWMARK: u32 = 0x5254;
 const MAIN_TABLE: u32 = 254;
 const EXIT_TABLE: u32 = 5254;
-const BYPASS_PRIORITY: u32 = 5250;
 const MAIN_PRIORITY: u32 = 5251;
 const EXIT_PRIORITY: u32 = 5252;
 
@@ -126,7 +124,11 @@ impl Linux {
         };
 
         let mut covered: Vec<IpNet> = Vec::new();
-        let mut routes = BTreeSet::new();
+        let mut routes: BTreeSet<RouteSpec> = plan
+            .hubs
+            .iter()
+            .map(|hub| route(hub.address(), Some(IpAddr::V6(plan.control)), MAIN_TABLE))
+            .collect();
 
         for mesh in &plan.meshes {
             for prefix in &mesh.prefixes {
@@ -236,7 +238,7 @@ impl Backend for Linux {
         Ok(())
     }
 
-    async fn update_dns(&mut self, meshes: &[Mesh], lighthouses: &BTreeMap<usize, Url>) {
+    async fn update_dns(&mut self, meshes: &[Mesh], lighthouses: &BTreeMap<usize, String>) {
         self.dns
             .update(&self.dataplane, &self.interface, meshes, lighthouses)
             .await;
@@ -273,19 +275,8 @@ impl Plan {
     fn exit_rules(&self) -> BTreeSet<RuleSpec> {
         let mut rules = BTreeSet::new();
 
-        let Some(exit) = &self.exit else {
+        if self.exit.is_none() {
             return rules;
-        };
-
-        for address in &exit.bypass {
-            rules.insert(RuleSpec {
-                priority: BYPASS_PRIORITY,
-                ipv6: address.is_ipv6(),
-                table: MAIN_TABLE,
-                destination: Some(IpNet::from(*address)),
-                unless_fwmark: None,
-                suppress_prefix_length: None,
-            });
         }
 
         for ipv6 in [false, true] {

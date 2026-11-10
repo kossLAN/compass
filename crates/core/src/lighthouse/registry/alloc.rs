@@ -1,10 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use compass_proto::{Addresses, Network, NodeId, PublicKey};
+use compass_config::LighthouseConfig;
+use compass_proto::{Addresses, NodeId, NodeInfo, PublicKey};
 use ipnet::{Ipv4Net, Ipv6Net};
-
-use super::Registration;
 
 const MAX_PROBES: u128 = 1 << 20;
 
@@ -15,19 +14,21 @@ fn seed(key: &PublicKey) -> u128 {
 }
 
 pub fn assign(
-    network: &Network,
-    registrations: &BTreeMap<NodeId, Registration>,
+    config: &LighthouseConfig,
+    announced: &BTreeMap<NodeId, NodeInfo>,
 ) -> Option<BTreeMap<NodeId, Addresses>> {
+    let network = &config.network;
     let mut taken_v4 = BTreeSet::new();
     let mut taken_v6 = BTreeSet::new();
-    registrations
+    announced
         .iter()
-        .map(|(id, registration)| {
-            let avoid = &registration.info.avoid;
-            let v4 = allocate_v4(network.ipv4, &registration.key, |address| {
+        .map(|(id, info)| {
+            let key = &config.nodes[id].key;
+            let avoid = &info.avoid;
+            let v4 = allocate_v4(network.ipv4, key, |address| {
                 taken_v4.contains(&address) || avoid.contains(&IpAddr::V4(address))
             })?;
-            let v6 = allocate_v6(network.ipv6, &registration.key, |address| {
+            let v6 = allocate_v6(network.ipv6, key, |address| {
                 taken_v6.contains(&address) || avoid.contains(&IpAddr::V6(address))
             })?;
             taken_v4.insert(v4);

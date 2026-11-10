@@ -1,16 +1,11 @@
 use std::collections::BTreeSet;
-use std::fmt;
-use std::net::IpAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use compass_proto::{AuthKey, DnsName, DnsRecord, MAX_RECORDS};
-use serde::de::value::MapAccessDeserializer;
-use serde::{Deserialize, Deserializer, de};
-use url::{Host, Url};
+use compass_proto::{DnsName, DnsRecord, MAX_RECORDS, PublicKey};
+use serde::Deserialize;
 
 use crate::ConfigError;
 use crate::interface::{MAX_INTERFACE_NAME, validate_interface_name};
-use crate::secret::read_secret;
 
 pub const MAX_LIGHTHOUSES: usize = 8;
 
@@ -18,78 +13,22 @@ pub const MAX_LIGHTHOUSES: usize = 8;
 #[serde(deny_unknown_fields)]
 pub struct ClientConfig {
     pub lighthouses: Vec<LighthouseEntry>,
-    pub auth_key_file: Option<PathBuf>,
     pub hostname: Option<DnsName>,
-    pub ca_file: Option<PathBuf>,
-    pub private_key_file: Option<PathBuf>,
+    pub private_key_file: PathBuf,
     #[serde(default)]
     pub interface: InterfaceConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LighthouseEntry {
-    pub url: Url,
-    pub auth_key_file: Option<PathBuf>,
-    pub dns: DnsConfig,
-    pub exit_node: ExitNodeConfig,
-}
-
-#[derive(Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawLighthouseEntry {
-    url: Url,
-    auth_key_file: Option<PathBuf>,
+pub struct LighthouseEntry {
+    pub endpoint: String,
+    pub public_key: PublicKey,
+    pub mesh: Option<String>,
     #[serde(default)]
-    dns: DnsConfig,
+    pub dns: DnsConfig,
     #[serde(default)]
-    exit_node: ExitNodeConfig,
-}
-
-impl<'de> Deserialize<'de> for LighthouseEntry {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct Visitor;
-
-        impl<'de> de::Visitor<'de> for Visitor {
-            type Value = LighthouseEntry;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str(
-                    "a lighthouse URL or a table with url, auth_key_file, dns and exit_node",
-                )
-            }
-
-            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                let url = v.parse().map_err(E::custom)?;
-                Ok(LighthouseEntry {
-                    url,
-                    auth_key_file: None,
-                    dns: DnsConfig::default(),
-                    exit_node: ExitNodeConfig::default(),
-                })
-            }
-
-            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
-            where
-                A: de::MapAccess<'de>,
-            {
-                let raw = RawLighthouseEntry::deserialize(MapAccessDeserializer::new(map))?;
-                Ok(LighthouseEntry {
-                    url: raw.url,
-                    auth_key_file: raw.auth_key_file,
-                    dns: raw.dns,
-                    exit_node: raw.exit_node,
-                })
-            }
-        }
-
-        deserializer.deserialize_any(Visitor)
-    }
+    pub exit_node: ExitNodeConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -170,14 +109,32 @@ impl ClientConfig {
             ));
         }
 
-        let unique: BTreeSet<&Url> = self.lighthouses.iter().map(|entry| &entry.url).collect();
+        let unique: BTreeSet<&PublicKey> = self
+            .lighthouses
+            .iter()
+            .map(|entry| &entry.public_key)
+            .collect();
 
         if unique.len() != self.lighthouses.len() {
             return Err(ConfigError::invalid(field, "lists a lighthouse twice"));
         }
 
         for entry in &self.lighthouses {
-            let lighthouse = &entry.url;
+            let lighthouse = &entry.endpoint;
+
+            if !has_port(lighthouse) {
+                return Err(ConfigError::invalid(
+                    field,
+                    format!("endpoint \"{lighthouse}\" must be \"host:port\""),
+                ));
+            }
+
+            if entry.mesh.as_ref().is_some_and(String::is_empty) {
+                return Err(ConfigError::invalid(
+                    field,
+                    format!("\"{lighthouse}\" has an empty mesh name"),
+                ));
+            }
 
             if entry.dns.records.len() > MAX_RECORDS {
                 return Err(ConfigError::invalid(
@@ -194,56 +151,14 @@ impl ClientConfig {
                     format!("\"{lighthouse}\" has an exit_node.peer that is not a peer's hostname"),
                 ));
             }
-
-            if self.auth_key_file_for(entry).is_none() {
-                return Err(ConfigError::invalid(
-                    field,
-                    format!(
-                        "\"{lighthouse}\" has no auth_key_file and client.auth_key_file is not set"
-                    ),
-                ));
-            }
-
-            let loopback = match lighthouse.host() {
-                Some(Host::Domain(domain)) => domain == "localhost",
-                Some(Host::Ipv4(ip)) => IpAddr::V4(ip).is_loopback(),
-                Some(Host::Ipv6(ip)) => IpAddr::V6(ip).is_loopback(),
-                None => false,
-            };
-
-            let secure = match lighthouse.scheme() {
-                "https" => true,
-                "http" => loopback,
-                _ => false,
-            };
-
-            if !secure {
-                return Err(ConfigError::invalid(
-                    field,
-                    format!("\"{lighthouse}\" must use https (http is only allowed to loopback)"),
-                ));
-            }
         }
 
         Ok(())
     }
+}
 
-    fn auth_key_file_for<'a>(&'a self, entry: &'a LighthouseEntry) -> Option<&'a Path> {
-        entry
-            .auth_key_file
-            .as_deref()
-            .or(self.auth_key_file.as_deref())
-    }
-
-    pub fn read_auth_keys(&self) -> Result<Vec<AuthKey>, ConfigError> {
-        self.lighthouses
-            .iter()
-            .map(|entry| {
-                let path = self.auth_key_file_for(entry).ok_or_else(|| {
-                    ConfigError::invalid("client.lighthouses", "a lighthouse has no auth_key_file")
-                })?;
-                read_secret(path).map(|secret| AuthKey::new(secret.as_str()))
-            })
-            .collect()
-    }
+fn has_port(endpoint: &str) -> bool {
+    endpoint
+        .rsplit_once(':')
+        .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok_and(|p| p > 0))
 }

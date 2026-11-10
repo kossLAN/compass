@@ -14,7 +14,7 @@ pub use client::{
 };
 pub use daemon::{DEFAULT_SOCKET, DaemonConfig, SocketConfig};
 pub use error::ConfigError;
-pub use lighthouse::{ApiConfig, HubConfig, KeyConfig, LighthouseConfig, NodesConfig, TlsConfig};
+pub use lighthouse::{HubConfig, LighthouseConfig, NodeConfig};
 pub use secret::read_key;
 
 fn read_file(path: &Path) -> Result<String, ConfigError> {

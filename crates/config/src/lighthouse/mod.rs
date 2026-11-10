@@ -2,62 +2,40 @@ mod raw;
 
 pub use self::raw::RawLighthouseConfig;
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::Duration;
 
-use compass_proto::{MAX_LABEL_LEN, MAX_NAME_LEN, Network, PublicKey, SecretHash};
-use jiff::{Span, SpanRelativeTo};
+use compass_proto::{MAX_LABEL_LEN, MAX_NAME_LEN, Network, NodeId, PublicKey};
 
-use self::raw::{RawApi, RawHub, RawKey, RawNetwork, RawNodes};
+use self::raw::{RawHub, RawNetwork, RawNode};
 use crate::ConfigError;
 use crate::acl::{NamePattern, Policy, Selector, Tag};
-use crate::secret::read_secret;
+use crate::interface::{MAX_INTERFACE_NAME, validate_interface_name};
 
-const MIN_SECRET_LEN: usize = 32;
 const MAX_DOMAIN_LEN: usize = MAX_NAME_LEN - MAX_LABEL_LEN - 1;
 
 #[derive(Debug, Clone)]
 pub struct LighthouseConfig {
-    pub api: ApiConfig,
     pub network: Network,
     pub hub: HubConfig,
-    pub nodes: NodesConfig,
-    pub keys: BTreeMap<String, KeyConfig>,
+    pub nodes: BTreeMap<NodeId, NodeConfig>,
     pub policy: Policy,
 }
 
 #[derive(Debug, Clone)]
-pub struct ApiConfig {
-    pub listen: SocketAddr,
-    pub tls: Option<TlsConfig>,
-}
-
-#[derive(Debug, Clone)]
-pub struct TlsConfig {
-    pub cert_file: PathBuf,
-    pub key_file: PathBuf,
-}
-
-#[derive(Debug, Clone)]
 pub struct HubConfig {
+    pub interface: String,
     pub listen_port: u16,
-    pub endpoint: String,
-    pub private_key_file: Option<PathBuf>,
+    pub private_key_file: PathBuf,
 }
 
 #[derive(Debug, Clone)]
-pub struct NodesConfig {
-    pub revoked: BTreeSet<PublicKey>,
-}
-
-#[derive(Debug, Clone)]
-pub struct KeyConfig {
-    pub secret: SecretHash,
+pub struct NodeConfig {
+    pub name: String,
+    pub key: PublicKey,
     pub owner: Option<String>,
     pub tags: Vec<Tag>,
-    pub offline_ttl: Duration,
     pub exit_node: bool,
 }
 
@@ -69,14 +47,13 @@ impl LighthouseConfig {
         };
 
         [
-            ("lighthouse.api.listen", self.api.listen != new.api.listen),
-            (
-                "lighthouse.api.tls_cert_file",
-                self.api.tls.is_some() != new.api.tls.is_some(),
-            ),
             (
                 "lighthouse.network",
                 without_zones(&self.network) != without_zones(&new.network),
+            ),
+            (
+                "lighthouse.hub.interface",
+                self.hub.interface != new.hub.interface,
             ),
             (
                 "lighthouse.hub.listen_port",
@@ -92,43 +69,24 @@ impl LighthouseConfig {
     }
 
     pub(crate) fn from_raw(raw: RawLighthouseConfig) -> Result<Self, ConfigError> {
-        let default_ttl = parse_ttl("lighthouse.nodes.offline_ttl", &raw.nodes.offline_ttl)?;
-        let nodes = NodesConfig::from_raw(raw.nodes);
         let network = network_from_raw(raw.network)?;
-        let keys = raw
-            .keys
-            .into_iter()
-            .map(|(name, key)| {
-                let key = KeyConfig::from_raw(&name, key, default_ttl)?;
-                Ok((name, key))
-            })
-            .collect::<Result<BTreeMap<_, _>, ConfigError>>()?;
-        ensure_unique_secrets(&keys)?;
+        let nodes = nodes_from_raw(raw.nodes)?;
         let policy = Policy::new(raw.groups, raw.acl, &network.domain)?;
 
         Ok(Self {
-            api: ApiConfig::from_raw(raw.api)?,
             network,
             hub: HubConfig::from_raw(raw.hub)?,
             nodes,
-            keys,
             policy,
         })
     }
 
-    pub fn find_key(&self, secret: &SecretHash) -> Option<(&str, &KeyConfig)> {
-        self.keys
-            .iter()
-            .find(|(_, key)| key.secret == *secret)
-            .map(|(name, key)| (name.as_str(), key))
-    }
-
-    pub fn dns_names<'a>(&'a self, key: &'a KeyConfig) -> impl Iterator<Item = &'a NamePattern> {
-        self.policy.dns_names(key.owner.as_deref(), &key.tags)
+    pub fn dns_names<'a>(&'a self, node: &'a NodeConfig) -> impl Iterator<Item = &'a NamePattern> {
+        self.policy.dns_names(node.owner.as_deref(), &node.tags)
     }
 
     pub fn unknown_tags(&self) -> Vec<&Tag> {
-        let granted: BTreeSet<&Tag> = self.keys.values().flat_map(|key| &key.tags).collect();
+        let granted: BTreeSet<&Tag> = self.nodes.values().flat_map(|node| &node.tags).collect();
         self.policy
             .referenced_tags()
             .into_iter()
@@ -137,44 +95,32 @@ impl LighthouseConfig {
     }
 }
 
-fn ensure_unique_secrets(keys: &BTreeMap<String, KeyConfig>) -> Result<(), ConfigError> {
-    let mut seen = BTreeMap::new();
+fn nodes_from_raw(
+    raw: BTreeMap<String, RawNode>,
+) -> Result<BTreeMap<NodeId, NodeConfig>, ConfigError> {
+    let mut nodes = BTreeMap::new();
 
-    for (name, key) in keys {
-        if let Some(other) = seen.insert(key.secret, name) {
-            return Err(ConfigError::invalid(
-                format!("lighthouse.keys.{name}"),
-                format!("shares its secret with lighthouse.keys.{other}"),
-            ));
+    for (name, node) in raw {
+        let node = NodeConfig::from_raw(name, node)?;
+
+        match nodes.entry(NodeId::of(&node.key)) {
+            Entry::Vacant(entry) => {
+                entry.insert(node);
+            },
+            Entry::Occupied(entry) => {
+                return Err(ConfigError::invalid(
+                    format!("lighthouse.nodes.{}", node.name),
+                    format!(
+                        "shares its public key or node id with lighthouse.nodes.{}",
+                        entry.get().name
+                    ),
+                ));
+            },
         }
     }
 
-    Ok(())
+    Ok(nodes)
 }
-
-impl ApiConfig {
-    fn from_raw(raw: RawApi) -> Result<Self, ConfigError> {
-        let tls = match (raw.tls_cert_file, raw.tls_key_file) {
-            (Some(cert_file), Some(key_file)) => Some(TlsConfig {
-                cert_file,
-                key_file,
-            }),
-            (None, None) => None,
-            _ => {
-                return Err(ConfigError::invalid(
-                    "lighthouse.api",
-                    "tls_cert_file and tls_key_file must be set together",
-                ));
-            },
-        };
-
-        Ok(Self {
-            listen: raw.listen,
-            tls,
-        })
-    }
-}
-
 fn network_from_raw(raw: RawNetwork) -> Result<Network, ConfigError> {
     if raw.domain.as_str().len() > MAX_DOMAIN_LEN {
         return Err(ConfigError::invalid(
@@ -212,6 +158,12 @@ fn network_from_raw(raw: RawNetwork) -> Result<Network, ConfigError> {
 
 impl HubConfig {
     fn from_raw(raw: RawHub) -> Result<Self, ConfigError> {
+        validate_interface_name(
+            "lighthouse.hub.interface",
+            &raw.interface,
+            MAX_INTERFACE_NAME,
+        )?;
+
         if raw.listen_port == 0 {
             return Err(ConfigError::invalid(
                 "lighthouse.hub.listen_port",
@@ -219,51 +171,17 @@ impl HubConfig {
             ));
         }
 
-        let has_port = raw.endpoint.rsplit_once(':').is_some_and(|(host, port)| {
-            !host.is_empty() && port.parse::<u16>().is_ok_and(|p| p > 0)
-        });
-
-        if !has_port {
-            return Err(ConfigError::invalid(
-                "lighthouse.hub.endpoint",
-                "expected \"host:port\"",
-            ));
-        }
-
         Ok(Self {
+            interface: raw.interface,
             listen_port: raw.listen_port,
-            endpoint: raw.endpoint,
             private_key_file: raw.private_key_file,
         })
     }
 }
 
-impl NodesConfig {
-    fn from_raw(raw: RawNodes) -> Self {
-        Self {
-            revoked: raw.revoked.into_iter().collect(),
-        }
-    }
-}
-
-fn parse_ttl(field: impl Into<String>, raw: &str) -> Result<Duration, ConfigError> {
-    let duration = raw
-        .parse::<Span>()
-        .and_then(|span| span.to_duration(SpanRelativeTo::days_are_24_hours()))
-        .ok()
-        .and_then(|duration| Duration::try_from(duration).ok())
-        .filter(|duration| !duration.is_zero());
-    duration.ok_or_else(|| {
-        ConfigError::invalid(
-            field,
-            "expected a duration longer than zero, like \"10m\", \"12h\" or \"30d\"",
-        )
-    })
-}
-
-impl KeyConfig {
-    fn from_raw(name: &str, raw: RawKey, default_ttl: Duration) -> Result<Self, ConfigError> {
-        let field = |suffix: &str| format!("lighthouse.keys.{name}{suffix}");
+impl NodeConfig {
+    fn from_raw(name: String, raw: RawNode) -> Result<Self, ConfigError> {
+        let field = |suffix: &str| format!("lighthouse.nodes.{name}{suffix}");
         let valid_name = name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'));
@@ -272,15 +190,6 @@ impl KeyConfig {
             return Err(ConfigError::invalid(
                 field(""),
                 "use letters, digits, '-' and '_'",
-            ));
-        }
-
-        let secret = read_secret(&raw.secret_file)?;
-
-        if secret.len() < MIN_SECRET_LEN {
-            return Err(ConfigError::invalid(
-                field(".secret_file"),
-                format!("secret must be at least {MIN_SECRET_LEN} characters"),
             ));
         }
 
@@ -293,16 +202,11 @@ impl KeyConfig {
             ));
         }
 
-        let offline_ttl = match &raw.offline_ttl {
-            Some(ttl) => parse_ttl(field(".offline_ttl"), ttl)?,
-            None => default_ttl,
-        };
-
         Ok(Self {
-            secret: SecretHash::of(secret.as_bytes()),
+            name,
+            key: raw.public_key,
             owner: raw.owner,
             tags: raw.tags,
-            offline_ttl,
             exit_node: raw.exit_node,
         })
     }

@@ -1,17 +1,18 @@
 mod plan;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::{IpAddr, SocketAddr};
+use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use compass_net::NetError;
 use compass_proto::{
-    DnsName, HubInfo, NodeId, PathKind, Peer, PeerStatus, PrivateKey, PublicKey, SignalMessage,
+    CONTROL_PREFIX, DnsName, NodeId, PathKind, Peer, PeerStatus, PrivateKey, PublicKey,
+    SignalMessage,
 };
 use ipnet::IpNet;
 use tokio::sync::mpsc;
-use url::Url;
 
 use crate::client::dataplane::{Backend, DataplaneError, Path, Plan, Platform, Stats};
 use crate::client::dns;
@@ -22,11 +23,12 @@ use crate::client::relay::Relay;
 const RESOLVE_RETRY: Duration = Duration::from_secs(15);
 const RESOLVE_INTERVAL: Duration = Duration::from_secs(300);
 const RESYNC: Duration = Duration::from_secs(10);
+const SESSION_LIFETIME: Duration = Duration::from_secs(180);
+const HANDSHAKE_PATIENCE: Duration = Duration::from_secs(10);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct View {
     pub meshes: Vec<Mesh>,
-    pub hubs: BTreeMap<usize, HubInfo>,
     pub attached: BTreeMap<PublicKey, BTreeSet<usize>>,
     pub connected: BTreeSet<usize>,
     pub serves: BTreeMap<usize, usize>,
@@ -48,7 +50,6 @@ pub struct ExitNode {
     pub peer: DnsName,
     /// `None` takes the first mesh that offers `peer` as an exit node.
     pub mesh: Option<usize>,
-    pub bypass: Vec<IpAddr>,
 }
 
 pub struct Engine {
@@ -57,24 +58,40 @@ pub struct Engine {
     ice: IceHandle,
     own_key: PublicKey,
     dns_meshes: BTreeSet<usize>,
-    lighthouses: Vec<Url>,
+    hubs: Vec<Hub>,
     exit_node: Option<ExitNode>,
-    view: Option<View>,
-    hubs: BTreeMap<usize, HubEndpoint>,
+    view: View,
     direct: BTreeMap<PublicKey, SocketAddr>,
     stats: Stats,
     applied: Option<Plan>,
     synced_at: Option<Instant>,
 }
 
-#[derive(Default)]
-struct HubEndpoint {
-    name: String,
+pub struct Hub {
+    key: PublicKey,
+    endpoint: String,
     addresses: Vec<SocketAddr>,
     resolved_at: Option<Instant>,
+    chosen: usize,
+    chosen_at: Instant,
 }
 
-impl HubEndpoint {
+impl Hub {
+    pub fn new(key: PublicKey, endpoint: String) -> Self {
+        Self {
+            key,
+            endpoint,
+            addresses: Vec::new(),
+            resolved_at: None,
+            chosen: 0,
+            chosen_at: Instant::now(),
+        }
+    }
+
+    fn address(&self) -> Option<SocketAddr> {
+        self.addresses.get(self.chosen).copied()
+    }
+
     fn due(&self) -> bool {
         let interval = if self.addresses.is_empty() {
             RESOLVE_RETRY
@@ -85,17 +102,43 @@ impl HubEndpoint {
     }
 
     async fn resolve(&mut self) {
-        match tokio::net::lookup_host(self.name.as_str()).await {
+        let found: io::Result<Vec<SocketAddr>> = tokio::net::lookup_host(self.endpoint.as_str())
+            .await
+            .map(Iterator::collect);
+
+        match found {
             Ok(addresses) => {
-                let mut addresses: Vec<SocketAddr> = addresses.collect();
-                addresses.sort_unstable();
-                addresses.dedup();
+                let current = self.address();
                 self.addresses = addresses;
+                self.choose(
+                    self.addresses
+                        .iter()
+                        .position(|address| Some(*address) == current)
+                        .unwrap_or(0),
+                );
             },
-            Err(error) => tracing::warn!(hub = self.name, %error, "failed to resolve the hub"),
+            Err(error) => tracing::warn!(hub = self.endpoint, %error, "failed to resolve the hub"),
         }
 
         self.resolved_at = Some(Instant::now());
+    }
+
+    fn choose(&mut self, address: usize) {
+        if address != self.chosen {
+            self.chosen = address;
+            self.chosen_at = Instant::now();
+        }
+    }
+
+    fn fail_over(&mut self, last_handshake: Option<SystemTime>) {
+        let answering = last_handshake
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age < SESSION_LIFETIME);
+        let waited = self.chosen_at.elapsed() >= HANDSHAKE_PATIENCE;
+
+        if !answering && waited && self.addresses.len() > 1 {
+            self.choose((self.chosen + 1) % self.addresses.len());
+        }
     }
 }
 
@@ -103,7 +146,8 @@ pub struct Setup<'a> {
     pub key: &'a PrivateKey,
     pub listen_port: u16,
     pub dns_meshes: BTreeSet<usize>,
-    pub lighthouses: Vec<Url>,
+    pub hubs: Vec<Hub>,
+    pub exit_node: Option<ExitNode>,
     pub local_networks: Vec<IpNet>,
     pub ice_events: mpsc::Sender<(u64, IceEvent)>,
     pub generation: u64,
@@ -134,10 +178,9 @@ impl Engine {
             ice,
             own_key,
             dns_meshes: setup.dns_meshes,
-            lighthouses: setup.lighthouses,
-            exit_node: None,
-            view: None,
-            hubs: BTreeMap::new(),
+            hubs: setup.hubs,
+            exit_node: setup.exit_node,
+            view: View::default(),
             direct: BTreeMap::new(),
             stats: Stats::default(),
             applied: None,
@@ -150,18 +193,6 @@ impl Engine {
     }
 
     pub async fn apply(&mut self, view: View) -> Result<(), DataplaneError> {
-        for (lighthouse, hub) in &view.hubs {
-            let endpoint = self.hubs.entry(*lighthouse).or_default();
-
-            if endpoint.name != hub.endpoint {
-                hub.endpoint.clone_into(&mut endpoint.name);
-                endpoint.addresses.clear();
-                endpoint.resolve().await;
-            }
-        }
-
-        self.hubs
-            .retain(|lighthouse, _| view.hubs.contains_key(lighthouse));
         self.backend.check_exit_serving(&view.meshes).await?;
 
         self.direct.retain(|key, _| view.lists(key));
@@ -183,6 +214,7 @@ impl Engine {
             view.meshes
                 .iter()
                 .flat_map(|mesh| mesh.routed.iter().copied())
+                .chain([IpNet::V6(CONTROL_PREFIX)])
                 .collect(),
         );
 
@@ -192,15 +224,17 @@ impl Engine {
             .filter(|mesh| self.dns_meshes.contains(&mesh.index))
             .cloned()
             .collect();
-        let mut lighthouses: BTreeMap<usize, Url> = BTreeMap::new();
+        let mut lighthouses: BTreeMap<usize, String> = BTreeMap::new();
 
         for (lighthouse, mesh) in &view.serves {
-            if let Some(url) = self.lighthouses.get(*lighthouse) {
-                lighthouses.entry(*mesh).or_insert_with(|| url.clone());
+            if let Some(hub) = self.hubs.get(*lighthouse) {
+                lighthouses
+                    .entry(*mesh)
+                    .or_insert_with(|| hub.endpoint.clone());
             }
         }
 
-        self.view = Some(view);
+        self.view = view;
         self.sync(&[]).await?;
 
         if !self.dns_meshes.is_empty() {
@@ -210,14 +244,15 @@ impl Engine {
         Ok(())
     }
 
-    fn plan(&self) -> Option<Plan> {
-        let view = self.view.as_ref()?;
+    fn plan(&self) -> Plan {
+        let view = &self.view;
         let relayed = self.relay.connected();
         let healthy: BTreeSet<usize> = view.connected.intersection(&relayed).copied().collect();
         let proxies = self.relay.endpoints();
-        Some(plan::build(&plan::Inputs {
+        plan::build(&plan::Inputs {
             view,
             own_key: &self.own_key,
+            hubs: &self.hubs,
             direct: &self.direct,
             proxies: &proxies,
             healthy: &healthy,
@@ -227,18 +262,15 @@ impl Engine {
                     .iter()
                     .filter(|mesh| self.dns_meshes.contains(&mesh.index)),
             ),
-        }))
+        })
     }
 
     async fn sync(&mut self, rehandshake: &[PublicKey]) -> Result<(), DataplaneError> {
-        let Some(plan) = self.plan() else {
-            return Ok(());
-        };
-
+        let plan = self.plan();
         self.synced_at = Some(Instant::now());
         self.ice.set_hubs(
             self.hubs
-                .values()
+                .iter()
                 .flat_map(|hub| hub.addresses.iter().copied())
                 .collect(),
         );
@@ -250,26 +282,29 @@ impl Engine {
     }
 
     pub async fn tick(&mut self) -> Result<(), DataplaneError> {
-        if self.view.is_none() {
-            return Ok(());
+        if self.applied.is_some() {
+            match self.backend.stats().await {
+                Ok(stats) => self.stats = stats,
+                Err(DataplaneError::Net(NetError::MissingDevice(device))) => {
+                    tracing::warn!(device, "interface disappeared; recreating it");
+                    self.applied = None;
+                },
+                Err(error) => return Err(error),
+            }
         }
 
-        match self.backend.stats().await {
-            Ok(stats) => self.stats = stats,
-            Err(DataplaneError::Net(NetError::MissingDevice(device))) => {
-                tracing::warn!(device, "interface disappeared; recreating it");
-                self.applied = None;
-            },
-            Err(error) => return Err(error),
-        }
+        for hub in &mut self.hubs {
+            if hub.due() {
+                hub.resolve().await;
+            }
 
-        for hub in self.hubs.values_mut().filter(|hub| hub.due()) {
-            hub.resolve().await;
+            let counters = self.stats.peers.get(&hub.key);
+            hub.fail_over(counters.and_then(|counters| counters.last_handshake));
         }
 
         let due = self.synced_at.is_none_or(|at| at.elapsed() >= RESYNC);
 
-        if due || self.plan() != self.applied {
+        if due || self.applied.as_ref() != Some(&self.plan()) {
             self.sync(&[]).await?;
         }
 
@@ -308,7 +343,7 @@ impl Engine {
         key: PublicKey,
         endpoint: Option<SocketAddr>,
     ) -> Result<(), DataplaneError> {
-        let known = self.view.as_ref().is_some_and(|view| view.lists(&key));
+        let known = self.view.lists(&key);
 
         let previous = match endpoint {
             Some(endpoint) if known => self.direct.insert(key, endpoint),
@@ -330,17 +365,18 @@ impl Engine {
 
     pub async fn teardown(&mut self) {
         self.backend.teardown().await;
-        self.view = None;
+        self.view = View::default();
         self.applied = None;
         self.direct.clear();
         self.synced_at = None;
     }
 
     pub fn status(&self) -> Vec<PeerStatus> {
-        let (Some(view), Some(plan)) = (&self.view, &self.applied) else {
+        let Some(plan) = &self.applied else {
             return Vec::new();
         };
 
+        let view = &self.view;
         let now = SystemTime::now();
         view.peers()
             .map(|(mesh, peer)| {
@@ -351,9 +387,9 @@ impl Engine {
                     .map_or(PathKind::None, |planned| match planned.path {
                         Path::Direct(endpoint) => PathKind::Direct(endpoint),
                         Path::Relay(lighthouse) => self
-                            .lighthouses
+                            .hubs
                             .get(lighthouse)
-                            .map_or(PathKind::None, |url| PathKind::Relay(url.clone())),
+                            .map_or(PathKind::None, |hub| PathKind::Relay(hub.endpoint.clone())),
                         Path::None => PathKind::None,
                     });
                 let counters = self.stats.peers.get(&peer.key);

@@ -4,14 +4,15 @@ use std::net::{IpAddr, SocketAddr};
 use compass_proto::{MIN_MTU, NodeId, PacketRule, Peer, PublicKey};
 use ipnet::IpNet;
 
-use super::{ExitNode, View};
-use crate::client::dataplane::{ExitPlan, MeshPlan, Path, PeerPlan, Plan};
+use super::{ExitNode, Hub, View};
+use crate::client::dataplane::{ExitPlan, HubPlan, MeshPlan, Path, PeerPlan, Plan};
 use crate::client::ice;
 use crate::client::meshes::Mesh;
 
 pub struct Inputs<'a> {
     pub view: &'a View,
     pub own_key: &'a PublicKey,
+    pub hubs: &'a [Hub],
     pub direct: &'a BTreeMap<PublicKey, SocketAddr>,
     pub proxies: &'a HashMap<NodeId, SocketAddr>,
     pub healthy: &'a BTreeSet<usize>,
@@ -87,14 +88,19 @@ pub fn build(inputs: &Inputs<'_>) -> Plan {
             });
         let (peer, sources) =
             granted.map_or((None, Vec::new()), |(key, sources)| (Some(key), sources));
-        ExitPlan {
-            peer,
-            sources,
-            bypass: exit_node.bypass.clone(),
-        }
+        ExitPlan { peer, sources }
     });
 
     Plan {
+        control: NodeId::of(inputs.own_key).control_address(),
+        hubs: inputs
+            .hubs
+            .iter()
+            .map(|hub| HubPlan {
+                key: hub.key,
+                endpoint: hub.address(),
+            })
+            .collect(),
         meshes: view.meshes.iter().map(mesh_plan).collect(),
         mtu: view
             .meshes
@@ -152,7 +158,7 @@ fn relay_for(
         .into_iter()
         .flatten()
         .copied()
-        .filter(|lighthouse| view.hubs.contains_key(lighthouse))
+        .filter(|lighthouse| view.serves.contains_key(lighthouse))
         .collect();
     let serving: Vec<usize> = view
         .serves

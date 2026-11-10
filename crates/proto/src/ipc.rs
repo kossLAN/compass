@@ -1,7 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
-use url::Url;
 
 use crate::{DnsName, DnsRecord, NodeId, PublicKey, RecordState};
 
@@ -53,7 +52,7 @@ pub struct StatusReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LighthouseStatus {
-    pub url: Url,
+    pub endpoint: String,
     pub mesh: Option<DnsName>,
     pub state: LighthouseState,
     pub relay: bool,
@@ -87,7 +86,7 @@ pub struct NodeStatus {
 #[serde(rename_all = "snake_case", tag = "kind", content = "via")]
 pub enum PathKind {
     Direct(SocketAddr),
-    Relay(Url),
+    Relay(String),
     None,
 }
 
@@ -110,6 +109,6 @@ pub struct RecordEntry {
     pub record: DnsRecord,
     pub mesh: Option<DnsName>,
     #[serde(default)]
-    pub lighthouses: Vec<Url>,
+    pub lighthouses: Vec<String>,
     pub state: Option<RecordState>,
 }

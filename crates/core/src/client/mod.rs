@@ -24,7 +24,7 @@ pub use self::dataplane::LinuxPlatform;
 pub use self::dataplane::{HostedPlatform, Platform, TunProvider, TunShape, Underlying};
 use self::ice::IceEvent;
 use self::session::SessionEvent;
-pub use self::settings::{CaCertificate, ClientSettings, LighthouseSettings};
+pub use self::settings::{ClientSettings, LighthouseSettings};
 
 const TICK: Duration = Duration::from_secs(1);
 const ADDRESS_SCAN: Duration = Duration::from_secs(10);
@@ -161,6 +161,5 @@ async fn run<P>(
         }
     }
 
-    agent.logout_if_ephemeral().await;
     agent.shutdown().await;
 }

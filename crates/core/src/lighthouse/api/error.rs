@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use compass_proto::{ApiErrorBody, ErrorCode};
 
-use crate::lighthouse::registry::RegisterError;
+use crate::lighthouse::registry::AnnounceError;
 
 #[derive(Debug)]
 pub struct ApiError {
@@ -34,11 +34,15 @@ impl ApiError {
         )
     }
 
-    pub fn unauthorized() -> Self {
+    pub fn unlisted() -> Self {
+        AnnounceError::Unlisted.into()
+    }
+
+    pub fn unannounced() -> Self {
         Self::new(
-            StatusCode::UNAUTHORIZED,
-            ErrorCode::Unauthorized,
-            "unknown or revoked token",
+            StatusCode::CONFLICT,
+            ErrorCode::Unannounced,
+            "this node has not announced itself",
         )
     }
 }
@@ -49,18 +53,16 @@ impl IntoResponse for ApiError {
     }
 }
 
-impl From<RegisterError> for ApiError {
-    fn from(error: RegisterError) -> Self {
+impl From<AnnounceError> for ApiError {
+    fn from(error: AnnounceError) -> Self {
         let (status, code) = match error {
-            RegisterError::InvalidAuthKey => (StatusCode::UNAUTHORIZED, ErrorCode::InvalidAuthKey),
-            RegisterError::Revoked => (StatusCode::FORBIDDEN, ErrorCode::Revoked),
-            RegisterError::UnknownNode => (StatusCode::UNAUTHORIZED, ErrorCode::Unauthorized),
-            RegisterError::AddressesExhausted => (
+            AnnounceError::Unlisted => (StatusCode::UNAUTHORIZED, ErrorCode::Unauthorized),
+            AnnounceError::AddressesExhausted => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 ErrorCode::AddressesExhausted,
             ),
-            RegisterError::Invalid(_) => (StatusCode::BAD_REQUEST, ErrorCode::BadRequest),
-            RegisterError::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, ErrorCode::Internal),
+            AnnounceError::Invalid(_) => (StatusCode::BAD_REQUEST, ErrorCode::BadRequest),
+            AnnounceError::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, ErrorCode::Internal),
         };
 
         Self::new(status, code, error.to_string())

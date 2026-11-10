@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use compass_config::acl::{Compiled, NamePattern};
-use compass_config::{KeyConfig, LighthouseConfig};
+use compass_config::{LighthouseConfig, NodeConfig};
 use compass_proto::{
-    CnameTarget, DnsName, DnsRecord, MAX_LABEL_LEN, NodeId, RecordData, RecordKind, RecordState,
-    RecordStatus, RejectReason,
+    CnameTarget, DnsName, DnsRecord, MAX_LABEL_LEN, NodeId, NodeInfo, RecordData, RecordKind,
+    RecordState, RecordStatus, RejectReason,
 };
 
-use super::{Node, Registration};
+use super::Node;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Names {
@@ -71,15 +71,23 @@ fn unique(records: &[DnsRecord]) -> impl Iterator<Item = &DnsRecord> {
 
 pub fn hostnames(
     config: &LighthouseConfig,
-    registrations: &BTreeMap<NodeId, Registration>,
+    announced: &BTreeMap<NodeId, NodeInfo>,
 ) -> BTreeMap<NodeId, DnsName> {
-    let mut held = BTreeSet::new();
-    registrations
+    let claims: BTreeMap<NodeId, BTreeSet<DnsName>> = config
+        .nodes
         .iter()
-        .map(|(id, registration)| {
-            let reserved = reserved_hostnames(config, &registration.key_name);
-            let hostname = candidates(&registration.info.hostname, *id)
-                .find(|candidate| !held.contains(candidate) && !reserved.contains(candidate))
+        .map(|(id, node)| (*id, claimed_hostnames(config, node)))
+        .collect();
+    let claimed: BTreeSet<&DnsName> = claims.values().flatten().collect();
+    let mut held = BTreeSet::new();
+    announced
+        .iter()
+        .map(|(id, info)| {
+            let own = &claims[id];
+            let reserved =
+                |candidate: &DnsName| claimed.contains(candidate) && !own.contains(candidate);
+            let hostname = candidates(&info.hostname, *id)
+                .find(|candidate| !held.contains(candidate) && !reserved(candidate))
                 .expect("numbered candidates never run out");
             held.insert(hostname.clone());
             (*id, hostname)
@@ -98,26 +106,16 @@ fn candidates(requested: &DnsName, id: NodeId) -> impl Iterator<Item = DnsName> 
     .chain((2_u64..).map(move |n| suffixed(requested, &n.to_string())))
 }
 
-fn reserved_hostnames(config: &LighthouseConfig, own: &str) -> BTreeSet<DnsName> {
+fn claimed_hostnames(config: &LighthouseConfig, node: &NodeConfig) -> BTreeSet<DnsName> {
     let domain = &config.network.domain;
-    let claimed = |key: &KeyConfig| -> BTreeSet<DnsName> {
-        config
-            .dns_names(key)
-            .filter_map(|pattern| match pattern {
-                NamePattern::Any | NamePattern::BelowHostname => None,
-                NamePattern::Exact(name) | NamePattern::Below(name) => {
-                    name.relative_to(domain)?.last_label().parse().ok()
-                },
-            })
-            .collect()
-    };
-    let own_claims = config.keys.get(own).map(claimed).unwrap_or_default();
     config
-        .keys
-        .iter()
-        .filter(|(name, _)| *name != own)
-        .flat_map(|(_, key)| claimed(key))
-        .filter(|hostname| !own_claims.contains(hostname))
+        .dns_names(node)
+        .filter_map(|pattern| match pattern {
+            NamePattern::Any | NamePattern::BelowHostname => None,
+            NamePattern::Exact(name) | NamePattern::Below(name) => {
+                name.relative_to(domain)?.last_label().parse().ok()
+            },
+        })
         .collect()
 }
 

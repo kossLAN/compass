@@ -1,18 +1,19 @@
 mod actor;
 mod api;
+mod hub;
 mod registry;
 mod signal;
 mod stun;
 mod world;
 
 use std::io;
-use std::net::{SocketAddr, TcpListener};
+use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum_server::tls_rustls::RustlsConfig;
 use compass_config::{ConfigError, LighthouseConfig, read_key};
-use compass_proto::PrivateKey;
+use compass_net::NetError;
+use compass_proto::{CONTROL_PORT, NodeId, PublicKey};
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 use tokio::task::JoinHandle;
@@ -20,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use self::actor::RegistryHandle;
+use self::hub::Hub;
 pub use self::registry::ReconcileReport;
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
@@ -29,10 +31,10 @@ const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 pub enum StartError {
     #[error(transparent)]
     Config(#[from] ConfigError),
-    #[error("listening for STUN on port {port}: {error}")]
-    Stun { port: u16, error: io::Error },
-    #[error("loading the TLS certificate: {0}")]
-    Tls(io::Error),
+    #[error(transparent)]
+    HubKey(#[from] HubKeyListed),
+    #[error("setting up the hub's WireGuard interface: {0}")]
+    Hub(NetError),
     #[error("listening on {address}: {error}")]
     Listen {
         address: SocketAddr,
@@ -44,16 +46,22 @@ pub enum StartError {
 pub enum ReloadError {
     #[error("{0} only changes on a restart")]
     NeedsRestart(&'static str),
-    #[error("reloading the TLS certificate: {0}")]
-    Tls(io::Error),
+    #[error(transparent)]
+    HubKey(#[from] HubKeyListed),
+    #[error("updating the hub's WireGuard peers: {0}")]
+    Hub(NetError),
     #[error("the lighthouse is shutting down")]
     Stopped,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("lighthouse.nodes.{0} has the hub's own public key")]
+pub struct HubKeyListed(String);
+
 pub struct Lighthouse {
     config: LighthouseConfig,
     registry: RegistryHandle,
-    tls: Option<RustlsConfig>,
+    hub: Hub,
     cancel: CancellationToken,
     tasks: TaskTracker,
     actor: JoinHandle<()>,
@@ -64,54 +72,47 @@ impl Lighthouse {
     pub async fn start(config: LighthouseConfig) -> Result<Self, StartError> {
         warn_unknown_tags(&config);
 
-        let hub_key = match &config.hub.private_key_file {
-            Some(path) => read_key(path)?,
-            None => PrivateKey::generate(),
-        };
+        let key = read_key(&config.hub.private_key_file)?;
+        check_hub_key(&config, &key.public_key())?;
 
-        let tls = match &config.api.tls {
-            Some(files) => {
-                let tls = RustlsConfig::from_pem_file(&files.cert_file, &files.key_file)
-                    .await
-                    .map_err(StartError::Tls)?;
-                offer_http1_only(&tls);
-                Some(tls)
-            },
-            None => None,
-        };
-
-        let address = config.api.listen;
-        let listener = TcpListener::bind(address)
+        let mut hub = Hub::start(&config, &key).await.map_err(StartError::Hub)?;
+        let address = SocketAddr::new(IpAddr::V6(hub.address()), CONTROL_PORT);
+        let listener = match TcpListener::bind(address)
             .and_then(|listener| listener.set_nonblocking(true).map(|()| listener))
-            .map_err(|error| StartError::Listen { address, error })?;
-
-        let port = config.hub.listen_port;
-        let stun = stun::bind(port).map_err(|error| StartError::Stun { port, error })?;
+        {
+            Ok(listener) => listener,
+            Err(error) => {
+                hub.stop().await;
+                return Err(StartError::Listen { address, error });
+            },
+        };
 
         let cancel = CancellationToken::new();
-        let (registry, actor) = actor::spawn(
-            Arc::new(config.clone()),
-            hub_key.public_key(),
-            cancel.clone(),
-        );
-
+        let (registry, actor) = actor::spawn(Arc::new(config.clone()), cancel.clone());
         let tasks = TaskTracker::new();
-        tasks.spawn(stun::answer(stun, cancel.clone()));
 
-        let state = api::AppState::new(registry.clone(), hub_key, cancel.clone(), tasks.clone());
+        if let Some(stun) = hub.stun() {
+            tasks.spawn(stun::answer(stun, cancel.clone()));
+        } else {
+            tracing::warn!(
+                "the hub cannot answer STUN, so nodes will not find direct paths to each other"
+            );
+        }
+
+        let state = api::AppState::new(registry.clone(), cancel.clone(), tasks.clone());
         tasks.spawn(api::maintain(state.clone(), cancel.clone()));
-        let server = tokio::spawn(serve(
-            listener,
-            tls.clone(),
-            api::router(state),
-            cancel.clone(),
-        ));
-        tracing::info!(listen = %address, "lighthouse listening");
+        let server = tokio::spawn(serve(listener, api::router(state), cancel.clone()));
+        tracing::info!(
+            key = %hub.key(),
+            port = config.hub.listen_port,
+            nodes = config.nodes.len(),
+            "lighthouse listening"
+        );
 
         Ok(Self {
             config,
             registry,
-            tls,
+            hub,
             cancel,
             tasks,
             actor,
@@ -127,15 +128,10 @@ impl Lighthouse {
             return Err(ReloadError::NeedsRestart(setting));
         }
 
+        check_hub_key(&config, &self.hub.key())?;
         warn_unknown_tags(&config);
 
-        if let (Some(tls), Some(files)) = (&self.tls, &config.api.tls) {
-            tls.reload_from_pem_file(&files.cert_file, &files.key_file)
-                .await
-                .map_err(ReloadError::Tls)?;
-            offer_http1_only(tls);
-        }
-
+        self.hub.sync(&config).await.map_err(ReloadError::Hub)?;
         let report = self
             .registry
             .reload(config.clone())
@@ -145,7 +141,7 @@ impl Lighthouse {
         Ok(report)
     }
 
-    pub async fn shutdown(self) -> io::Result<()> {
+    pub async fn shutdown(mut self) -> io::Result<()> {
         self.cancel.cancel();
         let served = self
             .server
@@ -155,19 +151,26 @@ impl Lighthouse {
         self.tasks.close();
         self.tasks.wait().await;
         let _ = self.actor.await;
+        self.hub.stop().await;
         served
     }
 }
 
+fn check_hub_key(config: &LighthouseConfig, hub: &PublicKey) -> Result<(), HubKeyListed> {
+    config
+        .nodes
+        .get(&NodeId::of(hub))
+        .map_or(Ok(()), |node| Err(HubKeyListed(node.name.clone())))
+}
+
 fn warn_unknown_tags(config: &LighthouseConfig) {
     for tag in config.unknown_tags() {
-        tracing::warn!(%tag, "an ACL refers to a tag that no key grants");
+        tracing::warn!(%tag, "an ACL refers to a tag that no node has");
     }
 }
 
 async fn serve(
     listener: TcpListener,
-    tls: Option<RustlsConfig>,
     router: axum::Router,
     cancel: CancellationToken,
 ) -> io::Result<()> {
@@ -178,17 +181,11 @@ async fn serve(
         shutdown.graceful_shutdown(Some(SHUTDOWN_GRACE));
     });
 
-    let service = router.into_make_service();
-
-    if let Some(tls) = tls {
-        let mut server = axum_server::from_tcp_rustls(listener, tls)?.handle(handle);
-        configure(server.http_builder());
-        server.serve(service).await
-    } else {
-        let mut server = axum_server::from_tcp(listener)?.handle(handle);
-        configure(server.http_builder());
-        server.serve(service).await
-    }
+    let mut server = axum_server::from_tcp(listener)?.handle(handle);
+    configure(server.http_builder());
+    server
+        .serve(router.into_make_service_with_connect_info::<SocketAddr>())
+        .await
 }
 
 fn configure(builder: &mut Builder<TokioExecutor>) {
@@ -197,10 +194,4 @@ fn configure(builder: &mut Builder<TokioExecutor>) {
         .http1()
         .timer(TokioTimer::new())
         .header_read_timeout(HEADER_READ_TIMEOUT);
-}
-
-fn offer_http1_only(tls: &RustlsConfig) {
-    let mut config = (*tls.get_inner()).clone();
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    tls.reload_from_config(Arc::new(config));
 }

@@ -11,12 +11,12 @@ use arc_swap::ArcSwap;
 use compass_net::{AsyncDevice, NetError, Stun, Tun, UserspaceDevice};
 use compass_proto::{DnsName, PrivateKey, PublicKey};
 use ipnet::IpNet;
-use reqwest::Certificate;
 use tokio_util::task::AbortOnDropHandle;
-use url::Url;
 
 use self::local::{Local, Resolver};
-use super::{Backend, DataplaneError, LocalNetworks, Plan, Platform, Stats, default_routes};
+use super::{
+    Backend, DataplaneError, HubPlan, LocalNetworks, Plan, Platform, Stats, default_routes,
+};
 use crate::client::dns::Zones;
 use crate::client::meshes::Mesh;
 
@@ -43,18 +43,13 @@ pub struct Underlying {
 pub struct HostedPlatform {
     provider: Arc<dyn TunProvider>,
     underlying: Arc<ArcSwap<Underlying>>,
-    roots: Arc<[Certificate]>,
 }
 
 impl HostedPlatform {
-    pub fn new(provider: Arc<dyn TunProvider>, roots: &[Vec<u8>]) -> Self {
+    pub fn new(provider: Arc<dyn TunProvider>) -> Self {
         Self {
             provider,
             underlying: Arc::default(),
-            roots: roots
-                .iter()
-                .filter_map(|der| Certificate::from_der(der).ok())
-                .collect(),
         }
     }
 
@@ -73,10 +68,6 @@ impl Platform for HostedPlatform {
             offered: networks.clone(),
             attached: networks,
         })
-    }
-
-    fn roots(&self) -> Option<&[Certificate]> {
-        Some(&self.roots)
     }
 
     async fn start(
@@ -123,6 +114,7 @@ impl Hosted {
             .meshes
             .iter()
             .flat_map(|mesh| mesh.prefixes.iter().copied())
+            .chain(plan.hubs.iter().map(HubPlan::address))
             .collect();
 
         if plan.exit.is_some() {
@@ -187,7 +179,7 @@ impl Backend for Hosted {
         Some(Stun::Userspace(self.device.stun()))
     }
 
-    async fn update_dns(&mut self, meshes: &[Mesh], lighthouses: &BTreeMap<usize, Url>) {
+    async fn update_dns(&mut self, meshes: &[Mesh], lighthouses: &BTreeMap<usize, String>) {
         let zones = Zones::new(meshes);
         zones.warn_shadowed(&self.shadowed, lighthouses);
         self.shadowed = zones.shadowed;

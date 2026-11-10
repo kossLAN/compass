@@ -7,7 +7,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use bytes::Bytes;
 use compass_proto::{
-    MAX_RELAY_FRAME, NodeId, RELAY_KEEPALIVE, RELAY_PROTOCOL, RELAY_TIMEOUT, RelayFrame, SecretHash,
+    MAX_RELAY_FRAME, NodeId, RELAY_KEEPALIVE, RELAY_PROTOCOL, RELAY_TIMEOUT, RelayFrame,
 };
 use futures_util::{SinkExt as _, StreamExt as _};
 use hyper::upgrade::OnUpgrade;
@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use super::auth::bearer;
+use super::auth::authenticate;
 use super::{ApiError, AppState};
 
 const QUEUE: usize = 256;
@@ -67,11 +67,7 @@ pub async fn accept(
     State(state): State<AppState>,
     mut request: Request,
 ) -> Result<Response, ApiError> {
-    let token = bearer(request.headers()).ok_or_else(ApiError::unauthorized)?;
-    let id = state
-        .registry
-        .authenticate(&token)
-        .ok_or_else(ApiError::unauthorized)?;
+    let id = authenticate(request.extensions(), &state)?;
     let wants_relay = request
         .headers()
         .get(header::UPGRADE)
@@ -86,10 +82,7 @@ pub async fn accept(
         .filter(|_| wants_relay)
         .ok_or_else(|| ApiError::bad_request(format!("expected an upgrade to {RELAY_PROTOCOL}")))?;
 
-    state.registry.touch(id);
-    state
-        .tasks
-        .spawn(serve(state.clone(), id, token.hash(), upgrade));
+    state.tasks.spawn(serve(state.clone(), id, upgrade));
     Ok((
         StatusCode::SWITCHING_PROTOCOLS,
         [
@@ -100,7 +93,7 @@ pub async fn accept(
         .into_response())
 }
 
-async fn serve(state: AppState, id: NodeId, token: SecretHash, upgrade: OnUpgrade) {
+async fn serve(state: AppState, id: NodeId, upgrade: OnUpgrade) {
     let stream = match upgrade.await {
         Ok(stream) => TokioIo::new(stream),
         Err(error) => {
@@ -124,8 +117,8 @@ async fn serve(state: AppState, id: NodeId, token: SecretHash, upgrade: OnUpgrad
             () = state.cancel.cancelled() => break "the lighthouse is shutting down",
             () = tokio::time::sleep_until(deadline) => break "the node stopped answering",
             changed = worlds.changed() => {
-                if changed.is_err() || worlds.borrow_and_update().token_owner(&token) != Some(id) {
-                    break "the node's session ended";
+                if changed.is_err() || !worlds.borrow_and_update().lists(id) {
+                    break "the node is no longer listed";
                 }
             },
             frame = outgoing.recv() => {

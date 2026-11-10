@@ -17,7 +17,7 @@ anyhow = "1.0.100"
 arc-swap = "1.7"
 async-trait = "0.1.89"
 axum = "0.8.9"
-axum-server = { version = "0.8.0", features = ["tls-rustls"] }
+axum-server = "0.8.0"
 base64 = "0.23.1"
 boringtun = "0.7.1"
 bytes = "1.12"
@@ -27,18 +27,16 @@ futures-util = { version = "0.3.31", features = ["sink"] }
 genetlink = "0.3.0"
 getrandom = "0.4.3"
 governor = "0.10"
-hmac = "0.13"
 hyper = "1.11.1"
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 hickory-server = "0.26.3"
 ipnet = { version = "2.12", features = ["serde"] }
-jiff = { version = "0.2.37", features = ["serde"] }
 netlink-packet-core = "0.9.0"
 netlink-packet-generic = "0.5.0"
 netlink-packet-wireguard = "0.5.0"
 nix = { version = "0.30.1", features = ["net", "socket", "uio"] }
 prefix-trie = { version = "0.8.4", default-features = false, features = ["ipnet"] }
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "query", "rustls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "query"] }
 rtc-ice = { version = "0.21.1", default-features = false, features = ["crypto-aws-lc-rs"] }
 rtc-shared = { version = "0.21.1", default-features = false }
 rtc-stun = { version = "0.21.1", default-features = false }
@@ -72,7 +70,6 @@ toml = "1.1.6"
 tun-rs = { version = "2.8.13", default-features = false, features = ["async"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-url = { version = "2.5", features = ["serde"] }
 x25519-dalek = { version = "3.0.0", features = ["getrandom", "static_secrets"] }
 zeroize = { version = "1.8", features = ["serde"] }
 

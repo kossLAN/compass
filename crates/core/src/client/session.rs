@@ -1,10 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use compass_proto::{
-    AuthKey, ErrorCode, KeyProof, NetMapResponse, NodeId, NodeInfo, PROTOCOL_VERSION, PrivateKey,
-    RegisterRequest, RegisterResponse, SignalEnvelope, SignalMessage, Token,
-};
+use compass_proto::{ErrorCode, NetMapResponse, NodeId, NodeInfo, SignalEnvelope, SignalMessage};
 use tokio::sync::{mpsc, watch};
 
 use crate::client::api::{ApiClient, ApiError};
@@ -15,7 +12,6 @@ const MAX_BACKOFF: Duration = Duration::from_secs(300);
 
 #[derive(Debug)]
 pub enum SessionEvent {
-    Registered(Token),
     NetMap(Box<NetMapResponse>),
     Signal(NodeId, SignalMessage),
     Error(String),
@@ -24,8 +20,6 @@ pub enum SessionEvent {
 
 pub struct Session {
     pub client: ApiClient,
-    pub auth_key: AuthKey,
-    pub key: PrivateKey,
     pub relay: Arc<Relay>,
     pub lighthouse: usize,
 }
@@ -51,90 +45,56 @@ impl Session {
     ) {
         let emit = Emitter { id, events };
         let mut backoff = Backoff::default();
-        let mut token = None;
 
         loop {
-            let error = self
-                .connect(&mut token, &mut info, &mut signals, &emit, &mut backoff)
-                .await;
+            let current = info.borrow_and_update().clone();
 
-            let registered = token.is_some();
+            let error = match self.client.announce(&current).await {
+                Ok(()) => {
+                    let error = self
+                        .serve(&mut info, &mut signals, &emit, &mut backoff)
+                        .await;
 
-            if registered && error.code() == Some(ErrorCode::Unauthorized) {
-                token = None;
-                continue;
-            }
+                    if error.code() == Some(ErrorCode::Unannounced) {
+                        continue;
+                    }
 
-            if !registered && error.is_fatal() {
-                emit.send(SessionEvent::Rejected(error.describe())).await;
-                return;
-            }
+                    error
+                },
+                Err(error) if error.is_fatal() => {
+                    emit.send(SessionEvent::Rejected(error.describe())).await;
+                    return;
+                },
+                Err(error) => error,
+            };
 
             emit.send(SessionEvent::Error(error.describe())).await;
             tokio::time::sleep(backoff.next()).await;
         }
     }
 
-    async fn connect(
+    async fn serve(
         &self,
-        token: &mut Option<Token>,
         info: &mut watch::Receiver<NodeInfo>,
         signals: &mut mpsc::Receiver<SignalEnvelope>,
         emit: &Emitter,
         backoff: &mut Backoff,
     ) -> ApiError {
-        let token = match token {
-            Some(token) => token,
-            None => match self.register(info).await {
-                Ok(response) => {
-                    emit.send(SessionEvent::Registered(response.token.clone()))
-                        .await;
-                    emit.send(SessionEvent::NetMap(Box::new(response.netmap)))
-                        .await;
-                    token.insert(response.token)
-                },
-                Err(error) => return error,
-            },
-        };
-
         tokio::select! {
-            error = follow(&self.client, token, emit, backoff) => error,
-            error = push_updates(&self.client, token, info, emit) => error,
-            error = follow_signals(&self.client, token, emit) => error,
-            error = push_signals(&self.client, token, signals) => error,
-            error = relay(&self.client, token, &self.relay, self.lighthouse) => error,
+            error = follow(&self.client, emit, backoff) => error,
+            error = announce_changes(&self.client, info, emit) => error,
+            error = follow_signals(&self.client, emit) => error,
+            error = push_signals(&self.client, signals) => error,
+            error = relay(&self.client, &self.relay, self.lighthouse) => error,
         }
-    }
-
-    async fn register(
-        &self,
-        info: &mut watch::Receiver<NodeInfo>,
-    ) -> Result<RegisterResponse, ApiError> {
-        let hub = self.client.hub().await?;
-        let proof = KeyProof::new(&hub.key, &self.key, hub.time).ok_or(ApiError::UnusableHubKey)?;
-        let request = RegisterRequest {
-            protocol: PROTOCOL_VERSION,
-            auth_key: self.auth_key.clone(),
-            key: self.key.public_key(),
-            proof,
-            info: info.borrow_and_update().clone(),
-        };
-        let response = self.client.register(&request).await?;
-        tracing::info!(node = %response.node_id, "registered with the lighthouse");
-        Ok(response)
     }
 }
 
-async fn follow(
-    client: &ApiClient,
-    token: &Token,
-    emit: &Emitter,
-    backoff: &mut Backoff,
-) -> ApiError {
+async fn follow(client: &ApiClient, emit: &Emitter, backoff: &mut Backoff) -> ApiError {
     let mut since: Option<String> = None;
 
     loop {
-        match client.poll(token, since.as_deref()).await {
+        match client.poll(since.as_deref()).await {
             Ok(Some(netmap)) => {
                 backoff.reset();
                 since = Some(netmap.hash.clone());
@@ -146,32 +106,31 @@ async fn follow(
     }
 }
 
-async fn push_updates(
+async fn announce_changes(
     client: &ApiClient,
-    token: &Token,
     info: &mut watch::Receiver<NodeInfo>,
     emit: &Emitter,
 ) -> ApiError {
     loop {
+        if info.changed().await.is_err() {
+            return std::future::pending().await;
+        }
+
         let current = info.borrow_and_update().clone();
 
-        match client.update(token, &current).await {
+        match client.announce(&current).await {
             Ok(()) => {},
             Err(error) if error.code() == Some(ErrorCode::BadRequest) => {
                 emit.send(SessionEvent::Error(error.describe())).await;
             },
             Err(error) => return error,
         }
-
-        if info.changed().await.is_err() {
-            return std::future::pending().await;
-        }
     }
 }
 
-async fn follow_signals(client: &ApiClient, token: &Token, emit: &Emitter) -> ApiError {
+async fn follow_signals(client: &ApiClient, emit: &Emitter) -> ApiError {
     loop {
-        match client.poll_signals(token).await {
+        match client.poll_signals().await {
             Ok(batch) => {
                 for delivery in batch.messages {
                     emit.send(SessionEvent::Signal(delivery.from, delivery.message))
@@ -185,7 +144,6 @@ async fn follow_signals(client: &ApiClient, token: &Token, emit: &Emitter) -> Ap
 
 async fn push_signals(
     client: &ApiClient,
-    token: &Token,
     signals: &mut mpsc::Receiver<SignalEnvelope>,
 ) -> ApiError {
     loop {
@@ -193,7 +151,7 @@ async fn push_signals(
             return std::future::pending().await;
         };
 
-        match client.signal(token, &envelope).await {
+        match client.signal(&envelope).await {
             Ok(()) => {},
             Err(error)
                 if matches!(
@@ -208,8 +166,8 @@ async fn push_signals(
     }
 }
 
-async fn relay(client: &ApiClient, token: &Token, relay: &Relay, lighthouse: usize) -> ApiError {
-    match client.relay(token).await {
+async fn relay(client: &ApiClient, relay: &Relay, lighthouse: usize) -> ApiError {
+    match client.relay().await {
         Ok(stream) => ApiError::Relay(relay.run(lighthouse, stream).await),
         Err(error) => error,
     }

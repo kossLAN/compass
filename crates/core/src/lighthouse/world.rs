@@ -1,12 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
 use compass_config::LighthouseConfig;
 use compass_config::acl::{Compiled, Subject, compile};
-use compass_proto::{
-    HubInfo, NetMap, NetMapResponse, NodeId, Peer, PublicKey, SecretHash, SelfNode, Token,
-};
+use compass_proto::{NetMap, NetMapResponse, NodeId, Peer, SelfNode};
 use sha2::{Digest as _, Sha256};
 
 use crate::lighthouse::registry::{Names, Node, Registry};
@@ -19,52 +17,38 @@ pub struct Liveness {
 #[derive(Debug, Clone)]
 pub struct World {
     config: Arc<LighthouseConfig>,
-    hub_key: PublicKey,
     nodes: BTreeMap<NodeId, Node>,
     names: Names,
     access: Compiled,
     liveness: Liveness,
-    tokens: HashMap<SecretHash, NodeId>,
     netmaps: BTreeMap<NodeId, NetMapResponse>,
 }
 
 impl World {
-    pub fn build(
-        config: Arc<LighthouseConfig>,
-        hub_key: PublicKey,
-        registry: &Registry,
-        liveness: &Liveness,
-    ) -> Self {
+    pub fn build(config: Arc<LighthouseConfig>, registry: &Registry, liveness: &Liveness) -> Self {
         let nodes = registry.nodes().clone();
         let subjects: Vec<Subject<'_>> = nodes
             .values()
             .map(|node| {
-                let key = config.keys.get(&node.key_name);
+                let listed = &config.nodes[&node.id];
                 Subject {
                     id: node.id,
-                    owner: key.and_then(|key| key.owner.as_deref()),
-                    tags: key.map_or(&[], |key| key.tags.as_slice()),
+                    owner: listed.owner.as_deref(),
+                    tags: &listed.tags,
                     addresses: node.addresses,
-                    exit_node: node.info.advertise_exit_node
-                        && key.is_some_and(|key| key.exit_node),
+                    exit_node: node.info.advertise_exit_node && listed.exit_node,
                 }
             })
             .collect();
         let access = compile(&config.policy, &subjects);
         let names = Names::resolve(&nodes, &access, &config);
-        let tokens = nodes
-            .values()
-            .map(|node| (node.token_hash, node.id))
-            .collect();
 
         let mut world = Self {
             config,
-            hub_key,
             nodes,
             names,
             access,
             liveness: liveness.clone(),
-            tokens,
             netmaps: BTreeMap::new(),
         };
         world.netmaps = world
@@ -75,12 +59,8 @@ impl World {
         world
     }
 
-    pub fn authenticate(&self, token: &Token) -> Option<NodeId> {
-        self.token_owner(&token.hash())
-    }
-
-    pub fn token_owner(&self, hash: &SecretHash) -> Option<NodeId> {
-        self.tokens.get(hash).copied()
+    pub fn lists(&self, id: NodeId) -> bool {
+        self.config.nodes.contains_key(&id)
     }
 
     pub fn sees(&self, from: NodeId, to: NodeId) -> bool {
@@ -98,10 +78,6 @@ impl World {
         let access = self.access.access(id).cloned().unwrap_or_default();
         let netmap = NetMap {
             network: self.config.network.clone(),
-            hub: HubInfo {
-                key: self.hub_key,
-                endpoint: self.config.hub.endpoint.clone(),
-            },
             node: SelfNode {
                 id,
                 hostname: node.hostname.clone(),

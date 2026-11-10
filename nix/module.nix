@@ -12,7 +12,7 @@ let
   client = cfg.settings.client or null;
   lighthouse = cfg.settings.lighthouse or null;
 
-  port = address: lib.toInt (lib.last (lib.splitString ":" address));
+  apiPort = 51819;
 
   resolvconf = config.networking.resolvconf.enable || config.services.resolved.enable;
   resolvconfExe = lib.getExe' config.networking.resolvconf.package "resolvconf";
@@ -33,7 +33,7 @@ in
     openFirewall = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Open the client's WireGuard port, and the lighthouse's API and STUN ports.";
+      description = "Open the client's WireGuard port and the lighthouse hub's.";
     };
   };
 
@@ -89,13 +89,13 @@ in
 
     networking.firewall = {
       trustedInterfaces = lib.optional (client != null) (client.interface.name or "bh0");
+      interfaces = lib.mkIf (lighthouse != null) {
+        ${lighthouse.hub.interface or "compass-hub"}.allowedTCPPorts = [ apiPort ];
+      };
       allowedUDPPorts = lib.mkIf cfg.openFirewall (
         lib.optional (client != null) (client.interface.listen_port or 51821)
         ++ lib.optional (lighthouse != null) (lighthouse.hub.listen_port or 51820)
       );
-      allowedTCPPorts = lib.mkIf (cfg.openFirewall && lighthouse != null) [
-        (port (lighthouse.api.listen or "[::]:8443"))
-      ];
     };
   };
 }

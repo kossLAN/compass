@@ -109,15 +109,6 @@ impl PrivateKey {
         Zeroizing::new(self.0.to_bytes())
     }
 
-    pub fn shared_secret(&self, peer: &PublicKey) -> Option<Zeroizing<[u8; KEY_LEN]>> {
-        let shared = self
-            .0
-            .diffie_hellman(&x25519_dalek::PublicKey::from(peer.0));
-        shared
-            .was_contributory()
-            .then(|| Zeroizing::new(shared.to_bytes()))
-    }
-
     pub fn public_key(&self) -> PublicKey {
         PublicKey(x25519_dalek::PublicKey::from(&self.0).to_bytes())
     }

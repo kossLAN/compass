@@ -13,7 +13,6 @@ use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseI
 use hickory_server::zone_handler::MessageResponseBuilder;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio_util::sync::CancellationToken;
-use url::Url;
 
 use super::zone::{Answer, Zone};
 use super::{Zones, stub_address};
@@ -37,7 +36,7 @@ impl DnsService {
         dataplane: &Dataplane,
         device: &str,
         meshes: &[Mesh],
-        lighthouses: &BTreeMap<usize, Url>,
+        lighthouses: &BTreeMap<usize, String>,
     ) {
         let zones = Zones::new(meshes);
         zones.warn_shadowed(&self.shadowed, lighthouses);

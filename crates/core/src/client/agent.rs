@@ -1,28 +1,25 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
 
 use compass_config::ConfigError;
 use compass_proto::{
-    AuthKey, DnsName, DnsRecord, ExitNodeChoice, ExitNodeStatus, LighthouseState, LighthouseStatus,
-    MAX_RECORDS, NetMap, Network, NodeInfo, NodeStatus, Phase, PrivateKey, RecordEntry, SecretHash,
-    SignalEnvelope, StatusReport, Token,
+    DnsName, DnsRecord, ExitNodeChoice, ExitNodeStatus, LighthouseState, LighthouseStatus,
+    MAX_RECORDS, NetMap, Network, NodeInfo, NodeStatus, Phase, RecordEntry, SignalEnvelope,
+    StatusReport,
 };
 use ipnet::IpNet;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
-use url::{Host, Url};
 
 use crate::client::api::ApiClient;
 use crate::client::dataplane::{LocalNetworks, Platform};
-use crate::client::engine::{Engine, ExitNode, Setup, View};
+use crate::client::engine::{Engine, ExitNode, Hub, Setup, View};
 use crate::client::ice::IceEvent;
 use crate::client::meshes;
 use crate::client::session::{Session, SessionEvent};
 use crate::client::settings::{ClientSettings, LighthouseSettings};
 
-const LOGOUT_TIMEOUT: Duration = Duration::from_secs(5);
 const SIGNAL_QUEUE: usize = 256;
 
 struct RunningSession {
@@ -40,25 +37,19 @@ struct MeshSettings {
 }
 
 struct LighthouseConnection {
-    url: Url,
+    endpoint: String,
     mesh: usize,
-    auth_key: AuthKey,
-    api: Option<ApiClient>,
     session: Option<RunningSession>,
-    token: Option<Token>,
     netmap: Option<NetMap>,
     state: LighthouseState,
 }
 
 impl LighthouseConnection {
-    const fn new(url: Url, mesh: usize, auth_key: AuthKey) -> Self {
+    const fn new(endpoint: String, mesh: usize) -> Self {
         Self {
-            url,
+            endpoint,
             mesh,
-            auth_key,
-            api: None,
             session: None,
-            token: None,
             netmap: None,
             state: LighthouseState::Connecting,
         }
@@ -79,7 +70,6 @@ pub struct Agent<P: Platform> {
     config: ClientSettings,
     device: P::Device,
     platform: P,
-    key: PrivateKey,
     engine: Option<Engine>,
     reflexive: Vec<SocketAddr>,
     engines_started: u64,
@@ -96,7 +86,6 @@ pub struct Agent<P: Platform> {
     local_networks: LocalNetworks,
     overlapping: Vec<(usize, IpNet)>,
     exit_choice: ExitNodeChoice,
-    lighthouse_addresses: Vec<IpAddr>,
 }
 
 impl<P: Platform> Agent<P> {
@@ -107,13 +96,6 @@ impl<P: Platform> Agent<P> {
         events: mpsc::Sender<(u64, SessionEvent)>,
         ice_events: mpsc::Sender<(u64, IceEvent)>,
     ) -> Result<Self, ConfigError> {
-        let key = config.private_key.clone().unwrap_or_else(|| {
-            tracing::info!(
-                "no private key is configured, so this node gets a new identity each start; \
-                 its pre-auth key should have a short offline_ttl"
-            );
-            PrivateKey::generate()
-        });
         let settings = mesh_settings(&config)?;
         let lighthouses = lighthouses(&config);
         let infos = infos(&config, &settings);
@@ -121,7 +103,6 @@ impl<P: Platform> Agent<P> {
             config,
             device,
             platform,
-            key,
             engine: None,
             reflexive: Vec::new(),
             engines_started: 0,
@@ -138,7 +119,6 @@ impl<P: Platform> Agent<P> {
             local_networks: LocalNetworks::default(),
             overlapping: Vec::new(),
             exit_choice: ExitNodeChoice::Config,
-            lighthouse_addresses: Vec::new(),
         })
     }
 
@@ -165,30 +145,6 @@ impl<P: Platform> Agent<P> {
         self.reflexive.clear();
     }
 
-    pub async fn logout_if_ephemeral(&mut self) {
-        if self.config.private_key.is_none() {
-            self.logout().await;
-        }
-    }
-
-    async fn logout(&mut self) {
-        self.stop_sessions().await;
-
-        for lighthouse in &mut self.lighthouses {
-            let (Some(token), Some(api)) = (lighthouse.token.take(), &lighthouse.api) else {
-                continue;
-            };
-
-            let url = &lighthouse.url;
-
-            match tokio::time::timeout(LOGOUT_TIMEOUT, api.logout(&token)).await {
-                Ok(Ok(())) => tracing::info!(lighthouse = %url, "logged out"),
-                Ok(Err(error)) => tracing::warn!(lighthouse = %url, %error, "failed to log out"),
-                Err(_) => tracing::warn!(lighthouse = %url, "failed to log out: no answer"),
-            }
-        }
-    }
-
     pub async fn set_exit_node(&mut self, choice: ExitNodeChoice) {
         self.exit_choice = choice;
         self.update_exit_node().await;
@@ -205,11 +161,7 @@ impl<P: Platform> Agent<P> {
             ExitNodeChoice::Peer(peer) => (None, peer.clone()),
         };
 
-        Some(ExitNode {
-            peer,
-            mesh,
-            bypass: self.lighthouse_addresses.clone(),
-        })
+        Some(ExitNode { peer, mesh })
     }
 
     async fn update_exit_node(&mut self) {
@@ -233,15 +185,14 @@ impl<P: Platform> Agent<P> {
         };
 
         let lighthouse = &mut self.lighthouses[index];
-        let url = lighthouse.url.clone();
+        let endpoint = lighthouse.endpoint.clone();
 
         match event {
-            SessionEvent::Registered(token) => lighthouse.token = Some(token),
             SessionEvent::NetMap(response) => {
                 let netmap = response.netmap;
 
                 if let Err(error) = netmap.check() {
-                    tracing::error!(lighthouse = %url, %error, "ignoring an invalid netmap");
+                    tracing::error!(lighthouse = endpoint, %error, "ignoring an invalid netmap");
                     lighthouse.state =
                         LighthouseState::Unreachable(format!("sent an invalid netmap: {error}"));
                     return;
@@ -254,7 +205,7 @@ impl<P: Platform> Agent<P> {
 
                 if *pinned != netmap.network {
                     tracing::error!(
-                        lighthouse = %url,
+                        lighthouse = endpoint,
                         "ignoring a netmap for a different network than the rest of this mesh"
                     );
                     lighthouse.state = LighthouseState::Unreachable(
@@ -273,7 +224,10 @@ impl<P: Platform> Agent<P> {
                 }
             },
             SessionEvent::Error(message) => {
-                tracing::warn!(lighthouse = %url, "lighthouse connection failed: {message}");
+                tracing::warn!(
+                    lighthouse = endpoint,
+                    "lighthouse connection failed: {message}"
+                );
                 let was_connected = lighthouse.connected();
                 lighthouse.state = LighthouseState::Unreachable(message);
 
@@ -282,8 +236,10 @@ impl<P: Platform> Agent<P> {
                 }
             },
             SessionEvent::Rejected(reason) => {
-                tracing::error!(lighthouse = %url, "the lighthouse rejected this node: {reason}");
-                lighthouse.token = None;
+                tracing::error!(
+                    lighthouse = endpoint,
+                    "the lighthouse rejected this node: {reason}"
+                );
                 lighthouse.netmap = None;
                 lighthouse.state = LighthouseState::Rejected(reason.clone());
                 let all_rejected = self
@@ -391,32 +347,17 @@ impl<P: Platform> Agent<P> {
         device: P::Device,
     ) -> Result<(), ConfigError> {
         let settings = mesh_settings(&config)?;
-        let key = config
-            .private_key
-            .clone()
-            .unwrap_or_else(|| self.key.clone());
-
-        let lighthouses_changed = changed(&self.config, &config, |lighthouse| &lighthouse.url);
-        let auth_keys_changed = changed(&self.config, &config, |lighthouse| &lighthouse.auth_key);
-        let cas_changed = changed(&self.config, &config, |lighthouse| &lighthouse.ca);
-        let key_changed = key != self.key;
-        let rebuild = lighthouses_changed
-            || auth_keys_changed
-            || key_changed
+        let rebuild = changed(&self.config, &config, |lighthouse| &lighthouse.endpoint)
+            || changed(&self.config, &config, |lighthouse| &lighthouse.key)
+            || changed(&self.config, &config, |lighthouse| &lighthouse.mesh)
+            || config.private_key != self.config.private_key
             || config.listen_port != self.config.listen_port
             || device != self.device
             || dns_meshes(&settings) != dns_meshes(&self.settings);
-        let restart = rebuild || cas_changed || self.failure.is_some();
-
-        if key_changed {
-            self.logout().await;
-        } else if lighthouses_changed {
-            self.logout_if_ephemeral().await;
-        }
+        let restart = rebuild || self.failure.is_some();
 
         self.config = config;
         self.device = device;
-        self.key = key;
         self.settings = settings;
         self.exit_choice = ExitNodeChoice::Config;
 
@@ -458,7 +399,6 @@ impl<P: Platform> Agent<P> {
 
         let mut view = View {
             meshes: meshes::resolve(netmaps, &self.avoided, &self.local_networks.attached),
-            hubs: BTreeMap::new(),
             attached: BTreeMap::new(),
             connected: BTreeSet::new(),
             serves: BTreeMap::new(),
@@ -469,7 +409,6 @@ impl<P: Platform> Agent<P> {
                 continue;
             };
 
-            view.hubs.insert(index, netmap.hub.clone());
             view.serves.insert(index, lighthouse.mesh);
 
             if !lighthouse.connected() {
@@ -576,11 +515,11 @@ impl<P: Platform> Agent<P> {
             .enumerate()
             .flat_map(|(index, settings)| {
                 let mesh = meshes.iter().find(|mesh| mesh.index == index);
-                let lighthouses: Vec<Url> = self
+                let lighthouses: Vec<String> = self
                     .lighthouses
                     .iter()
                     .filter(|lighthouse| lighthouse.mesh == index)
-                    .map(|lighthouse| lighthouse.url.clone())
+                    .map(|lighthouse| lighthouse.endpoint.clone())
                     .collect();
 
                 settings.records.iter().map(move |record| RecordEntry {
@@ -614,7 +553,7 @@ impl<P: Platform> Agent<P> {
                 .iter()
                 .enumerate()
                 .map(|(index, lighthouse)| LighthouseStatus {
-                    url: lighthouse.url.clone(),
+                    endpoint: lighthouse.endpoint.clone(),
                     mesh: meshes
                         .iter()
                         .find(|mesh| mesh.index == lighthouse.mesh)
@@ -623,7 +562,7 @@ impl<P: Platform> Agent<P> {
                     relay: relayed.contains(&index),
                 })
                 .collect(),
-            key: self.key.public_key(),
+            key: self.config.private_key.public_key(),
             observed_endpoints: self.reflexive.clone(),
             nodes: meshes
                 .iter()
@@ -649,15 +588,18 @@ impl<P: Platform> Agent<P> {
     async fn connect(&mut self) {
         self.stop_sessions().await;
         self.failure = None;
+        let own_key = self.config.private_key.public_key();
         let mut clients = Vec::new();
 
         for entry in &self.config.lighthouses {
-            let url = &entry.url;
-
-            match ApiClient::new(url.clone(), entry.ca.as_ref(), self.platform.roots()) {
+            match ApiClient::new(&own_key, &entry.key) {
                 Ok(client) => clients.push(client),
                 Err(error) => {
-                    tracing::error!(lighthouse = %url, %error, "failed to set up the API client");
+                    tracing::error!(
+                        lighthouse = entry.endpoint,
+                        %error,
+                        "failed to set up the API client"
+                    );
                     self.failure = Some(error.to_string());
                     return;
                 },
@@ -667,15 +609,16 @@ impl<P: Platform> Agent<P> {
         if self.engine.is_none() {
             self.engines_started += 1;
             let setup = Setup {
-                key: &self.key,
+                key: &self.config.private_key,
                 listen_port: self.config.listen_port,
                 dns_meshes: dns_meshes(&self.settings),
-                lighthouses: self
+                hubs: self
                     .config
                     .lighthouses
                     .iter()
-                    .map(|entry| entry.url.clone())
+                    .map(|entry| Hub::new(entry.key, entry.endpoint.clone()))
                     .collect(),
+                exit_node: self.exit_node(),
                 local_networks: self.local_networks.offered.clone(),
                 ice_events: self.ice_events.clone(),
                 generation: self.engines_started,
@@ -691,8 +634,7 @@ impl<P: Platform> Agent<P> {
             }
         }
 
-        self.resolve_lighthouse_addresses().await;
-        self.update_exit_node().await;
+        self.tick().await;
 
         let Some(relay) = self.engine.as_ref().map(Engine::relay) else {
             return;
@@ -703,44 +645,16 @@ impl<P: Platform> Agent<P> {
             let id = self.sessions_started;
             let (signals, outgoing) = mpsc::channel(SIGNAL_QUEUE);
             let session = Session {
-                client: client.clone(),
-                auth_key: lighthouse.auth_key.clone(),
-                key: self.key.clone(),
+                client,
                 relay: Arc::clone(&relay),
                 lighthouse: index,
             };
             let info = self.infos[lighthouse.mesh].subscribe();
             let task = tokio::spawn(session.run(id, info, outgoing, self.events.clone()));
 
-            lighthouse.api = Some(client);
             lighthouse.session = Some(RunningSession { id, task, signals });
             lighthouse.state = LighthouseState::Connecting;
         }
-    }
-
-    async fn resolve_lighthouse_addresses(&mut self) {
-        let mut addresses = Vec::new();
-
-        for entry in &self.config.lighthouses {
-            let lighthouse = &entry.url;
-            let port = lighthouse.port_or_known_default().unwrap_or(443);
-
-            match lighthouse.host() {
-                Some(Host::Domain(domain)) => match tokio::net::lookup_host((domain, port)).await {
-                    Ok(found) => addresses.extend(found.map(|address| address.ip())),
-                    Err(error) => {
-                        tracing::warn!(%lighthouse, %error, "failed to resolve the lighthouse");
-                    },
-                },
-                Some(Host::Ipv4(address)) => addresses.push(IpAddr::V4(address)),
-                Some(Host::Ipv6(address)) => addresses.push(IpAddr::V6(address)),
-                None => {},
-            }
-        }
-
-        addresses.sort_unstable();
-        addresses.dedup();
-        self.lighthouse_addresses = addresses;
     }
 
     async fn stop_sessions(&mut self) {
@@ -784,20 +698,18 @@ where
         .ne(new.lighthouses.iter().map(&field))
 }
 
-/// Lighthouses that share an auth key serve one mesh; meshes are numbered in the order their
-/// first lighthouse is listed.
 fn mesh_indices(config: &ClientSettings) -> Vec<usize> {
-    let mut meshes: Vec<SecretHash> = Vec::new();
+    let mut meshes: Vec<&Option<String>> = Vec::new();
     config
         .lighthouses
         .iter()
         .map(|lighthouse| {
-            let hash = lighthouse.auth_key.hash();
+            let name = &lighthouse.mesh;
             meshes
                 .iter()
-                .position(|known| *known == hash)
+                .position(|known| *known == name)
                 .unwrap_or_else(|| {
-                    meshes.push(hash);
+                    meshes.push(name);
                     meshes.len() - 1
                 })
         })
@@ -809,9 +721,7 @@ fn lighthouses(config: &ClientSettings) -> Vec<LighthouseConnection> {
         .lighthouses
         .iter()
         .zip(mesh_indices(config))
-        .map(|(entry, mesh)| {
-            LighthouseConnection::new(entry.url.clone(), mesh, entry.auth_key.clone())
-        })
+        .map(|(entry, mesh)| LighthouseConnection::new(entry.endpoint.clone(), mesh))
         .collect()
 }
 
@@ -834,7 +744,7 @@ fn mesh_settings(config: &ClientSettings) -> Result<Vec<MeshSettings>, ConfigErr
             meshes.push(Combined::default());
         }
 
-        let url = &entry.url;
+        let lighthouse = &entry.endpoint;
         let combined = &mut meshes[mesh];
 
         for record in &entry.dns.records {
@@ -847,26 +757,26 @@ fn mesh_settings(config: &ClientSettings) -> Result<Vec<MeshSettings>, ConfigErr
             return Err(ConfigError::invalid(
                 "client.lighthouses",
                 format!(
-                    "\"{url}\" shares an auth key with other lighthouses, so they serve one mesh, \
-                     and together they list more than {MAX_RECORDS} records"
+                    "\"{lighthouse}\" serves one mesh with other lighthouses, and together they list \
+                     more than {MAX_RECORDS} records"
                 ),
             ));
         }
 
         agree(
-            url,
+            lighthouse,
             "dns.accept",
             &mut combined.accept_dns,
             entry.dns.accept,
         )?;
         agree(
-            url,
+            lighthouse,
             "exit_node.peer",
             &mut combined.exit_peer,
             entry.exit_node.peer.clone(),
         )?;
         agree(
-            url,
+            lighthouse,
             "exit_node.advertise",
             &mut combined.advertise_exit_node,
             entry.exit_node.advertise,
@@ -898,7 +808,7 @@ fn mesh_settings(config: &ClientSettings) -> Result<Vec<MeshSettings>, ConfigErr
 }
 
 fn agree<T>(
-    url: &Url,
+    lighthouse: &str,
     setting: &str,
     combined: &mut Option<T>,
     value: Option<T>,
@@ -914,8 +824,8 @@ where
         return Err(ConfigError::invalid(
             "client.lighthouses",
             format!(
-                "\"{url}\" sets {setting} differently from a lighthouse with the same auth key, \
-                 though they serve one mesh"
+                "\"{lighthouse}\" sets {setting} differently from another lighthouse, though they \
+                 serve one mesh"
             ),
         ));
     }

@@ -110,7 +110,7 @@ fn print_status(report: &StatusReport) -> anyhow::Result<()> {
         write_field(
             &mut out,
             "lighthouse",
-            format_args!("{} ({mesh}{state}{relay})", lighthouse.url),
+            format_args!("{} ({mesh}{state}{relay})", lighthouse.endpoint),
         )?;
     }
 
@@ -161,7 +161,7 @@ fn print_status(report: &StatusReport) -> anyhow::Result<()> {
                 PathKind::Direct(endpoint) => format!("direct {endpoint}"),
                 PathKind::Relay(_) if !peer.online => "offline".to_owned(),
                 PathKind::Relay(lighthouse) => {
-                    format!("relay {}", lighthouse.host_str().unwrap_or_default())
+                    format!("relay {}", host(lighthouse))
                 },
                 PathKind::None => "unreachable".to_owned(),
             };
@@ -226,9 +226,12 @@ fn mesh(entry: &RecordEntry) -> String {
     entry
         .lighthouses
         .first()
-        .and_then(|url| url.host_str())
-        .unwrap_or("-")
+        .map_or("-", |endpoint| host(endpoint))
         .to_owned()
+}
+
+fn host(endpoint: &str) -> &str {
+    endpoint.rsplit_once(':').map_or(endpoint, |(host, _)| host)
 }
 
 fn join(addresses: &[IpAddr]) -> String {

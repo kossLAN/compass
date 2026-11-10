@@ -79,6 +79,13 @@ impl DaemonConfig {
             ));
         }
 
+        if client.interface.name == lighthouse.hub.interface {
+            return Err(ConfigError::invalid(
+                "lighthouse.hub.interface",
+                "is the client's interface",
+            ));
+        }
+
         Ok(())
     }
 }

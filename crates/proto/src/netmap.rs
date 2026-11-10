@@ -6,7 +6,7 @@ use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use sha2::{Digest as _, Sha256};
 
-use crate::{DnsName, DnsRecord, PublicKey};
+use crate::{CONTROL_PREFIX, DnsName, DnsRecord, PublicKey};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -61,6 +61,8 @@ const REVERSE_ROOTS: [&str; 2] = ["in-addr.arpa", "ip6.arpa"];
 pub enum NetMapError {
     #[error("mesh prefix {0} is outside 100.64.0.0/10, the RFC 1918 ranges and {MESH_RANGE_V6}")]
     Prefix(IpNet),
+    #[error("mesh prefix {0} overlaps {CONTROL_PREFIX}, where nodes reach their lighthouses")]
+    Control(Ipv6Net),
     #[error("address {0} is outside the mesh prefixes")]
     Address(IpAddr),
     #[error("rule source {0} is outside the mesh prefixes")]
@@ -94,6 +96,12 @@ impl Network {
 
         if !MESH_RANGE_V6.contains(&self.ipv6) {
             return Err(NetMapError::Prefix(self.ipv6.into()));
+        }
+
+        if self.ipv6.contains(&CONTROL_PREFIX.network())
+            || CONTROL_PREFIX.contains(&self.ipv6.network())
+        {
+            return Err(NetMapError::Control(self.ipv6));
         }
 
         if !(MIN_MTU..=MAX_MTU).contains(&self.mtu) {
@@ -130,12 +138,6 @@ impl Network {
             IpAddr::V6(v6) => self.ipv6.contains(&v6),
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct HubInfo {
-    pub key: PublicKey,
-    pub endpoint: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -320,7 +322,6 @@ pub struct PacketRule {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NetMap {
     pub network: Network,
-    pub hub: HubInfo,
     pub node: SelfNode,
     pub peers: Vec<Peer>,
     pub inbound: Vec<PacketRule>,

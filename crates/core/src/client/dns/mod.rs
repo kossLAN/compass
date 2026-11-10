@@ -10,7 +10,6 @@ use std::net::IpAddr;
 use compass_proto::DnsName;
 use hickory_server::proto::rr::Name;
 use ipnet::IpNet;
-use url::Url;
 
 pub use self::message::{Reply, answer, failure, frame, unframe};
 #[cfg(feature = "linux")]
@@ -115,11 +114,15 @@ impl Zones {
         }
     }
 
-    pub fn warn_shadowed(&self, before: &[(usize, DnsName)], lighthouses: &BTreeMap<usize, Url>) {
+    pub fn warn_shadowed(
+        &self,
+        before: &[(usize, DnsName)],
+        lighthouses: &BTreeMap<usize, String>,
+    ) {
         for (mesh, zone) in self.shadowed.iter().filter(|entry| !before.contains(entry)) {
             tracing::warn!(
                 %zone,
-                lighthouse = lighthouses.get(mesh).map_or("", |url| url.as_str()),
+                lighthouse = lighthouses.get(mesh).map_or("", String::as_str),
                 "an earlier lighthouse in client.lighthouses already answers for this zone or one overlapping it; ignoring the names this lighthouse has in it",
             );
         }
