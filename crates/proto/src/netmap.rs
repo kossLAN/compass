@@ -114,12 +114,14 @@ impl Network {
 
         let reverse: [DnsName; 2] =
             REVERSE_ROOTS.map(|root| root.parse().expect("reverse roots are valid DNS names"));
-        let mut served: Vec<&DnsName> = vec![&self.domain];
-        served.extend(&reverse);
+        let mut served: Vec<&DnsName> = reverse.iter().collect();
 
         for zone in &self.zones {
-            if let Some(other) = served.iter().find(|other| zone.overlaps(other)) {
-                return Err(NetMapError::Zone(zone.clone(), (*other).clone()));
+            let inside_domain = zone.is_at_or_under(&self.domain).then_some(&self.domain);
+            let overlapped = served.iter().copied().find(|other| zone.overlaps(other));
+
+            if let Some(other) = inside_domain.or(overlapped) {
+                return Err(NetMapError::Zone(zone.clone(), other.clone()));
             }
 
             served.push(zone);

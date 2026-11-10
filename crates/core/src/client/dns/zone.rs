@@ -12,7 +12,7 @@ const MAX_CNAME_CHAIN: usize = 8;
 
 #[derive(Debug, Default)]
 pub struct Zone {
-    origins: Vec<LowerName>,
+    authoritative: Vec<LowerName>,
     records: BTreeMap<LowerName, Vec<Record>>,
 }
 
@@ -37,10 +37,10 @@ struct Builder {
 }
 
 impl Zone {
-    pub fn from_meshes(meshes: &[Mesh], owned: &[Vec<DnsName>], origins: &[DnsName]) -> Self {
+    pub fn from_meshes(meshes: &[Mesh], owned: &[Vec<DnsName>], authoritative: &[DnsName]) -> Self {
         let mut builder = Builder {
             zone: Self {
-                origins: origins
+                authoritative: authoritative
                     .iter()
                     .filter_map(absolute)
                     .map(Into::into)
@@ -83,12 +83,12 @@ impl Zone {
     }
 
     pub fn lookup(&self, name: &LowerName, kind: RecordType) -> Answer {
-        if !self.origins.iter().any(|origin| origin.zone_of(name)) {
-            return Answer::Refused;
-        }
-
         if !self.records.contains_key(name) {
-            return Answer::NotFound;
+            return if self.is_authoritative_for(name) {
+                Answer::NotFound
+            } else {
+                Answer::Refused
+            };
         }
 
         let mut answers = Vec::new();
@@ -121,6 +121,10 @@ impl Zone {
         }
 
         Answer::Found(answers)
+    }
+
+    fn is_authoritative_for(&self, name: &LowerName) -> bool {
+        self.authoritative.iter().any(|zone| zone.zone_of(name))
     }
 }
 

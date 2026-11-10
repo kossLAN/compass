@@ -34,46 +34,42 @@ fn claim_zones(meshes: &[Mesh]) -> (Vec<Vec<DnsName>>, Vec<(usize, DnsName)>) {
 
     for mesh in meshes {
         let network = &mesh.netmap.network;
-        let mut zones = Vec::new();
+        let (zones, lost): (Vec<&DnsName>, Vec<&DnsName>) = iter::once(&network.domain)
+            .chain(&network.zones)
+            .partition(|zone| !claimed.iter().any(|other| zone.overlaps(other)));
 
-        for zone in iter::once(&network.domain).chain(&network.zones) {
-            if claimed.iter().any(|other| zone.overlaps(other)) {
-                shadowed.push((mesh.index, zone.clone()));
-            } else {
-                claimed.push(zone);
-                zones.push(zone.clone());
-            }
-        }
-
-        owned.push(zones);
+        shadowed.extend(lost.into_iter().map(|zone| (mesh.index, zone.clone())));
+        owned.push(zones.iter().map(|zone| (*zone).clone()).collect());
+        claimed.extend(zones);
     }
 
     (owned, shadowed)
 }
 
-fn search(meshes: &[Mesh], owned: &[Vec<DnsName>]) -> Vec<String> {
+fn domains(meshes: &[Mesh], owned: &[Vec<DnsName>]) -> Vec<DnsName> {
     meshes
         .iter()
         .zip(owned)
-        .filter(|(mesh, zones)| zones.contains(&mesh.netmap.network.domain))
-        .map(|(mesh, _)| mesh.netmap.network.domain.to_string())
+        .map(|(mesh, zones)| (&mesh.netmap.network.domain, zones))
+        .filter(|(domain, zones)| zones.contains(domain))
+        .map(|(domain, _)| domain.clone())
         .collect()
 }
 
-fn origins(meshes: &[Mesh], owned: &[Vec<DnsName>]) -> Vec<DnsName> {
-    let mut origins: Vec<DnsName> = owned.iter().flatten().cloned().collect();
+fn authoritative(meshes: &[Mesh], domains: &[DnsName]) -> Vec<DnsName> {
+    let mut zones = domains.to_vec();
     let reverse = meshes
         .iter()
         .flat_map(|mesh| mesh.routed.iter().copied())
         .flat_map(reverse_zones);
 
     for zone in reverse {
-        if !origins.contains(&zone) {
-            origins.push(zone);
+        if !zones.contains(&zone) {
+            zones.push(zone);
         }
     }
 
-    origins
+    zones
 }
 
 fn reverse_zones(prefix: IpNet) -> Vec<DnsName> {
@@ -105,11 +101,11 @@ pub struct Zones {
 impl Zones {
     pub fn new(meshes: &[Mesh]) -> Self {
         let (owned, shadowed) = claim_zones(meshes);
-        let origins = origins(meshes, &owned);
+        let domains = domains(meshes, &owned);
 
         Self {
-            zone: Zone::from_meshes(meshes, &owned, &origins),
-            search: search(meshes, &owned),
+            zone: Zone::from_meshes(meshes, &owned, &authoritative(meshes, &domains)),
+            search: domains.iter().map(ToString::to_string).collect(),
             shadowed,
         }
     }

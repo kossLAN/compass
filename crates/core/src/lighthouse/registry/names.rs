@@ -162,13 +162,9 @@ impl Context<'_> {
         };
 
         let hostname = &self.node.hostname;
-        let mesh_name = if zone == domain {
-            record.name.as_ref()
-        } else {
-            None
-        };
+        let mesh_name = name.relative_to(domain);
 
-        if let Some(mesh_name) = mesh_name {
+        if let Some(mesh_name) = &mesh_name {
             if mesh_name == hostname {
                 return Err(RejectReason::Reserved);
             }
