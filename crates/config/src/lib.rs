@@ -11,6 +11,7 @@ use std::path::Path;
 
 pub use client::{
     ClientConfig, DnsConfig, ExitNodeConfig, InterfaceConfig, LighthouseEntry, MAX_LIGHTHOUSES,
+    is_endpoint,
 };
 pub use daemon::{DEFAULT_SOCKET, DaemonConfig, SocketConfig};
 pub use error::ConfigError;

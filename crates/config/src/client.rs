@@ -122,7 +122,7 @@ impl ClientConfig {
         for entry in &self.lighthouses {
             let lighthouse = &entry.endpoint;
 
-            if !has_port(lighthouse) {
+            if !is_endpoint(lighthouse) {
                 return Err(ConfigError::invalid(
                     field,
                     format!("endpoint \"{lighthouse}\" must be \"host:port\""),
@@ -157,7 +157,7 @@ impl ClientConfig {
     }
 }
 
-fn has_port(endpoint: &str) -> bool {
+pub fn is_endpoint(endpoint: &str) -> bool {
     endpoint
         .rsplit_once(':')
         .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok_and(|p| p > 0))
