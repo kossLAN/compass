@@ -14,7 +14,7 @@ use compass_proto::{
 use ipnet::IpNet;
 use tokio::sync::mpsc;
 
-use crate::client::dataplane::{Backend, DataplaneError, Path, Plan, Platform, Stats};
+use crate::client::dataplane::{Backend, DataplaneError, Names, Path, Plan, Platform, Stats};
 use crate::client::dns;
 use crate::client::ice::{self, IceEvent, IceHandle, IcePeer};
 use crate::client::meshes::Mesh;
@@ -235,13 +235,11 @@ impl Engine {
         }
 
         self.view = view;
-        self.sync(&[]).await?;
-
-        if !self.dns_meshes.is_empty() {
-            self.backend.update_dns(&meshes, &lighthouses).await;
-        }
-
-        Ok(())
+        let names = (!self.dns_meshes.is_empty()).then_some(Names {
+            meshes: &meshes,
+            lighthouses: &lighthouses,
+        });
+        self.sync(names, &[]).await
     }
 
     fn plan(&self) -> Plan {
@@ -265,7 +263,11 @@ impl Engine {
         })
     }
 
-    async fn sync(&mut self, rehandshake: &[PublicKey]) -> Result<(), DataplaneError> {
+    async fn sync(
+        &mut self,
+        names: Option<Names<'_>>,
+        rehandshake: &[PublicKey],
+    ) -> Result<(), DataplaneError> {
         let plan = self.plan();
         self.synced_at = Some(Instant::now());
         self.ice.set_hubs(
@@ -276,7 +278,7 @@ impl Engine {
         );
         self.relay
             .set_routes(plan.peers.iter().map(|peer| (peer.id, peer.relay)));
-        self.backend.apply(&plan, rehandshake).await?;
+        self.backend.apply(&plan, names, rehandshake).await?;
         self.applied = Some(plan);
         Ok(())
     }
@@ -305,7 +307,7 @@ impl Engine {
         let due = self.synced_at.is_none_or(|at| at.elapsed() >= RESYNC);
 
         if due || self.applied.as_ref() != Some(&self.plan()) {
-            self.sync(&[]).await?;
+            self.sync(None, &[]).await?;
         }
 
         Ok(())
@@ -316,7 +318,7 @@ impl Engine {
         exit_node: Option<ExitNode>,
     ) -> Result<(), DataplaneError> {
         self.exit_node = exit_node;
-        self.sync(&[]).await
+        self.sync(None, &[]).await
     }
 
     pub fn exit_node_active(&self) -> bool {
@@ -331,7 +333,7 @@ impl Engine {
         local_networks: Vec<IpNet>,
     ) -> Result<(), DataplaneError> {
         self.ice.set_local_networks(local_networks);
-        self.sync(&[]).await
+        self.sync(None, &[]).await
     }
 
     pub fn signal(&self, from: NodeId, message: SignalMessage) {
@@ -360,7 +362,7 @@ impl Engine {
             Vec::new()
         };
 
-        self.sync(&rehandshake).await
+        self.sync(None, &rehandshake).await
     }
 
     pub async fn teardown(&mut self) {

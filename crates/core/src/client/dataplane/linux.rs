@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ use compass_proto::{PrivateKey, PublicKey};
 use ipnet::IpNet;
 
 use super::{
-    Backend, DataplaneError, ExitPlan, LocalNetworks, MeshPlan, Plan, Platform, Stats,
+    Backend, DataplaneError, ExitPlan, LocalNetworks, MeshPlan, Names, Plan, Platform, Stats,
     default_routes,
 };
 use crate::FWMARK;
@@ -172,6 +172,7 @@ impl Backend for Linux {
     async fn apply(
         &mut self,
         plan: &Plan,
+        names: Option<Names<'_>>,
         rehandshake: &[PublicKey],
     ) -> Result<(), DataplaneError> {
         self.firewall
@@ -181,6 +182,18 @@ impl Backend for Linux {
         self.sync_peers(plan, rehandshake).await?;
         self.dataplane.sync_routes(&self.routes(plan)).await?;
         self.dataplane.sync_rules(&plan.exit_rules()).await?;
+
+        if let Some(names) = names {
+            self.dns
+                .update(
+                    &self.dataplane,
+                    &self.interface,
+                    names.meshes,
+                    names.lighthouses,
+                )
+                .await;
+        }
+
         Ok(())
     }
 
@@ -236,12 +249,6 @@ impl Backend for Linux {
         }
 
         Ok(())
-    }
-
-    async fn update_dns(&mut self, meshes: &[Mesh], lighthouses: &BTreeMap<usize, String>) {
-        self.dns
-            .update(&self.dataplane, &self.interface, meshes, lighthouses)
-            .await;
     }
 }
 

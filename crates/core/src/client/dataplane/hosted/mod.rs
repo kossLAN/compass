@@ -2,7 +2,6 @@ mod host;
 mod local;
 mod resolver;
 
-use std::collections::BTreeMap;
 use std::io;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -15,10 +14,9 @@ use tokio_util::task::AbortOnDropHandle;
 
 use self::local::{Local, Resolver};
 use super::{
-    Backend, DataplaneError, HubPlan, LocalNetworks, Plan, Platform, Stats, default_routes,
+    Backend, DataplaneError, HubPlan, LocalNetworks, Names, Plan, Platform, Stats, default_routes,
 };
 use crate::client::dns::Zones;
-use crate::client::meshes::Mesh;
 
 pub trait TunProvider: Protect + 'static {
     fn establish(&self, shape: &TunShape) -> io::Result<AsyncDevice>;
@@ -110,6 +108,22 @@ struct Hosted {
 }
 
 impl Hosted {
+    fn resolve(&mut self, names: Names<'_>) {
+        let zones = Zones::new(names.meshes);
+        zones.warn_shadowed(&self.shadowed, names.lighthouses);
+        self.shadowed = zones.shadowed;
+
+        let resolver = names.meshes.first().map(|mesh| Resolver {
+            network: mesh.netmap.network.ipv4,
+            zone: zones.zone,
+        });
+        self.dns = Dns {
+            servers: resolver.iter().map(Resolver::address).collect(),
+            search: zones.search,
+        };
+        self.local.set_resolver(resolver);
+    }
+
     fn shape(&self, plan: &Plan) -> TunShape {
         let mut routes: Vec<IpNet> = plan
             .meshes
@@ -159,8 +173,13 @@ impl Backend for Hosted {
     async fn apply(
         &mut self,
         plan: &Plan,
+        names: Option<Names<'_>>,
         rehandshake: &[PublicKey],
     ) -> Result<(), DataplaneError> {
+        if let Some(names) = names {
+            self.resolve(names);
+        }
+
         self.device.filter_inbound(plan.mesh_rules());
         let ops = plan.peer_ops(&self.device.state(), rehandshake);
         self.device.apply(&ops);
@@ -178,34 +197,5 @@ impl Backend for Hosted {
 
     fn stun(&self) -> Option<Stun> {
         Some(Stun::Userspace(self.device.stun()))
-    }
-
-    async fn update_dns(&mut self, meshes: &[Mesh], lighthouses: &BTreeMap<usize, String>) {
-        let zones = Zones::new(meshes);
-        zones.warn_shadowed(&self.shadowed, lighthouses);
-        self.shadowed = zones.shadowed;
-
-        let resolver = meshes.first().map(|mesh| Resolver {
-            network: mesh.netmap.network.ipv4,
-            zone: zones.zone,
-        });
-        self.dns = Dns {
-            servers: resolver.iter().map(Resolver::address).collect(),
-            search: zones.search,
-        };
-        self.local.set_resolver(resolver);
-
-        let Some(shape) = &self.shape else {
-            return;
-        };
-        let shape = TunShape {
-            dns_servers: self.dns.servers.clone(),
-            search_domains: self.dns.search.clone(),
-            ..shape.clone()
-        };
-
-        if let Err(error) = self.establish(shape).await {
-            tracing::warn!(%error, "failed to give the tunnel its resolver");
-        }
     }
 }

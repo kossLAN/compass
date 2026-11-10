@@ -180,6 +180,12 @@ pub struct Stats {
     pub peers: BTreeMap<PublicKey, Counters>,
 }
 
+#[derive(Clone, Copy)]
+pub struct Names<'a> {
+    pub meshes: &'a [Mesh],
+    pub lighthouses: &'a BTreeMap<usize, String>,
+}
+
 impl From<DeviceState> for Stats {
     fn from(device: DeviceState) -> Self {
         let peers = device
@@ -200,8 +206,12 @@ impl From<DeviceState> for Stats {
 
 #[async_trait::async_trait]
 pub trait Backend: Send + Sync {
-    async fn apply(&mut self, plan: &Plan, rehandshake: &[PublicKey])
-    -> Result<(), DataplaneError>;
+    async fn apply(
+        &mut self,
+        plan: &Plan,
+        names: Option<Names<'_>>,
+        rehandshake: &[PublicKey],
+    ) -> Result<(), DataplaneError>;
 
     async fn stats(&mut self) -> Result<Stats, DataplaneError>;
 
@@ -212,8 +222,6 @@ pub trait Backend: Send + Sync {
     async fn check_exit_serving(&mut self, _meshes: &[Mesh]) -> Result<(), DataplaneError> {
         Ok(())
     }
-
-    async fn update_dns(&mut self, _meshes: &[Mesh], _lighthouses: &BTreeMap<usize, String>) {}
 }
 
 #[async_trait::async_trait]
