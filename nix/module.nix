@@ -14,6 +14,10 @@ let
 
   apiPort = 51819;
 
+  advertisesExitNode = lib.any (lighthouse: lighthouse.exit_node.advertise or false) (
+    client.lighthouses or [ ]
+  );
+
   resolvconf = config.networking.resolvconf.enable || config.services.resolved.enable;
   resolvconfExe = lib.getExe' config.networking.resolvconf.package "resolvconf";
 in
@@ -82,7 +86,7 @@ in
       };
     };
 
-    boot.kernel.sysctl = lib.mkIf (client.exit_node.advertise or false) {
+    boot.kernel.sysctl = lib.mkIf advertisesExitNode {
       "net.ipv4.conf.all.forwarding" = lib.mkDefault true;
       "net.ipv6.conf.all.forwarding" = lib.mkDefault true;
     };
