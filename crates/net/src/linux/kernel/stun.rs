@@ -9,6 +9,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use socket2::{Domain, Protocol, SockFilter, Socket, Type};
 use tokio::net::UdpSocket;
 
+use crate::Fwmark;
 use crate::stun::{Datagram, MAGIC_COOKIE, local_address_for};
 
 const UDP_HEADER_LEN: usize = 8;
@@ -92,7 +93,7 @@ impl KernelStun {
     }
 
     fn source_for(&self, destination: SocketAddr) -> io::Result<IpAddr> {
-        local_address_for(destination, Some(self.mark))
+        local_address_for(destination, Some(&Fwmark(self.mark)))
     }
 }
 

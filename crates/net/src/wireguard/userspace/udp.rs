@@ -1,6 +1,6 @@
 use std::io::{self, IoSliceMut};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-use std::os::fd::AsRawFd as _;
+use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -11,6 +11,7 @@ use tokio::io::Interest;
 use tokio::net::UdpSocket;
 
 use super::offload;
+use crate::Protect;
 
 pub const MAX_DATAGRAM: usize = u16::MAX as usize;
 
@@ -22,22 +23,28 @@ const SOCKET_BUFFER: usize = 7 << 20;
 
 pub struct Sockets {
     port: u16,
-    mark: Option<u32>,
+    protect: Option<Arc<dyn Protect>>,
     v4: Arc<UdpSocket>,
     v6: Option<Arc<UdpSocket>>,
     gso: AtomicBool,
 }
 
 impl Sockets {
-    pub fn bind(port: u16, mark: Option<u32>) -> io::Result<Self> {
-        let v4 = bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)), mark)?;
-        let v6 = bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)), mark)
-            .inspect_err(|error| tracing::debug!(%error, "no IPv6 WireGuard socket"))
-            .ok();
+    pub fn bind(port: u16, protect: Option<Arc<dyn Protect>>) -> io::Result<Self> {
+        let v4 = bind(
+            SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)),
+            protect.as_deref(),
+        )?;
+        let v6 = bind(
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)),
+            protect.as_deref(),
+        )
+        .inspect_err(|error| tracing::debug!(%error, "no IPv6 WireGuard socket"))
+        .ok();
 
         Ok(Self {
             port,
-            mark,
+            protect,
             gso: AtomicBool::new(offload::supports_gso(&v4)),
             v4: Arc::new(v4),
             v6: v6.map(Arc::new),
@@ -48,8 +55,8 @@ impl Sockets {
         self.port
     }
 
-    pub const fn mark(&self) -> Option<u32> {
-        self.mark
+    pub fn protect(&self) -> Option<&dyn Protect> {
+        self.protect.as_deref()
     }
 
     pub fn receivers(&self) -> impl Iterator<Item = Arc<UdpSocket>> {
@@ -248,7 +255,7 @@ pub async fn recv(
         .await
 }
 
-fn bind(address: SocketAddr, mark: Option<u32>) -> io::Result<UdpSocket> {
+fn bind(address: SocketAddr, protect: Option<&dyn Protect>) -> io::Result<UdpSocket> {
     let socket = Socket::new(
         Domain::for_address(address),
         Type::DGRAM,
@@ -259,8 +266,8 @@ fn bind(address: SocketAddr, mark: Option<u32>) -> io::Result<UdpSocket> {
         socket.set_only_v6(true)?;
     }
 
-    if let Some(mark) = mark {
-        socket.set_mark(mark)?;
+    if let Some(protect) = protect {
+        protect.protect(socket.as_fd())?;
     }
 
     socket.set_recv_buffer_size(SOCKET_BUFFER)?;

@@ -5,8 +5,11 @@
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::os::fd::AsFd as _;
 
 use socket2::{Domain, Protocol, Socket, Type};
+
+use crate::Protect;
 
 pub const MAGIC_COOKIE: u32 = 0x2112_a442;
 
@@ -21,15 +24,18 @@ pub fn is_stun(payload: &[u8]) -> bool {
     payload.get(4..8) == Some(MAGIC_COOKIE.to_be_bytes().as_slice())
 }
 
-pub fn local_address_for(destination: SocketAddr, mark: Option<u32>) -> io::Result<IpAddr> {
+pub fn local_address_for(
+    destination: SocketAddr,
+    protect: Option<&dyn Protect>,
+) -> io::Result<IpAddr> {
     let probe = Socket::new(
         Domain::for_address(destination),
         Type::DGRAM,
         Some(Protocol::UDP),
     )?;
 
-    if let Some(mark) = mark {
-        probe.set_mark(mark)?;
+    if let Some(protect) = protect {
+        protect.protect(probe.as_fd())?;
     }
 
     probe.connect(&destination.into())?;

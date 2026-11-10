@@ -32,7 +32,7 @@ use self::filter::Filter;
 use self::table::{Entry, Peer, Table};
 use self::udp::{Batch, Sockets};
 use crate::stun::{Datagram, local_address_for};
-use crate::{DeviceState, MeshRules, NetError, PeerOp, PeerSpec, PeerState};
+use crate::{DeviceState, MeshRules, NetError, PeerOp, PeerSpec, PeerState, Protect};
 
 const INDEX_MASK: u32 = (1 << 24) - 1;
 const HANDSHAKE_RATE_LIMIT: u64 = 100;
@@ -62,7 +62,7 @@ struct Shared {
 
 impl Shared {
     fn deliver_stun(&self, remote: SocketAddr, payload: &[u8]) {
-        let local = match local_address_for(remote, self.sockets.mark()) {
+        let local = match local_address_for(remote, self.sockets.protect()) {
             Ok(local) => local,
             Err(error) => {
                 tracing::debug!(%remote, %error, "no local address for a STUN datagram");
@@ -129,10 +129,10 @@ impl UserspaceDevice {
     pub fn new(
         key: &PrivateKey,
         listen_port: u16,
-        mark: Option<u32>,
+        protect: Option<Arc<dyn Protect>>,
         intercept: Option<Arc<dyn Intercept>>,
     ) -> Result<Self, NetError> {
-        let sockets = Sockets::bind(listen_port, mark).map_err(NetError::Bind)?;
+        let sockets = Sockets::bind(listen_port, protect).map_err(NetError::Bind)?;
         let secret = StaticSecret::from(*key.to_bytes());
         let public = X25519PublicKey::from(&secret);
         let (stun, received) = mpsc::channel(STUN_QUEUE);
@@ -291,8 +291,8 @@ impl UserspaceDevice {
         DeviceState {
             public_key: Some(self.public_key),
             listen_port: self.shared.sockets.port(),
-            fwmark: self.shared.sockets.mark().unwrap_or_default(),
             peers,
+            ..DeviceState::default()
         }
     }
 

@@ -2,6 +2,7 @@
 mod linux;
 mod model;
 mod plan;
+mod protect;
 mod stun;
 mod wireguard;
 
@@ -14,6 +15,7 @@ pub use model::{
     RouteSpec, RuleSpec,
 };
 pub use plan::plan_peers;
+pub use protect::{Fwmark, Protect};
 pub use stun::{Datagram, is_stun};
 pub use tun_rs::AsyncDevice;
 pub use wireguard::{Intercept, Stun, Tun, UserspaceDevice};

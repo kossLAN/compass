@@ -1,11 +1,12 @@
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::os::fd::AsFd as _;
 use std::sync::Arc;
 use std::time::Duration;
 
 use compass_proto::DNS_PORT;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::{TcpSocket, UdpSocket};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
@@ -60,7 +61,7 @@ pub async fn serve(local: Arc<Local>, mut packets: mpsc::Receiver<Vec<u8>>) {
     }
 }
 
-fn answer(local: &Local, host: &mut Host, forwards: &mut Forwards) {
+fn answer(local: &Arc<Local>, host: &mut Host, forwards: &mut Forwards) {
     loop {
         let queries = host.poll();
 
@@ -76,7 +77,7 @@ fn answer(local: &Local, host: &mut Host, forwards: &mut Forwards) {
             match dns::answer(&resolver.zone, &query) {
                 Some(Reply::Answer(response)) => host.respond(asker, &response),
                 Some(Reply::Forward) if forwards.len() < MAX_FORWARDS => {
-                    forwards.spawn(forward(local.dns_servers(), asker, query));
+                    forwards.spawn(forward(Arc::clone(local), asker, query));
                 },
                 Some(Reply::Forward) | None => reply(host, asker, dns::failure(&query)),
             }
@@ -91,9 +92,9 @@ fn reply(host: &mut Host, asker: Asker, response: Option<Vec<u8>>) {
     }
 }
 
-async fn forward(servers: Vec<IpAddr>, asker: Asker, query: Vec<u8>) -> (Asker, Option<Vec<u8>>) {
-    for server in servers {
-        match tokio::time::timeout(FORWARD_TIMEOUT, ask(asker, server, &query)).await {
+async fn forward(local: Arc<Local>, asker: Asker, query: Vec<u8>) -> (Asker, Option<Vec<u8>>) {
+    for server in local.dns_servers() {
+        match tokio::time::timeout(FORWARD_TIMEOUT, ask(&local, asker, server, &query)).await {
             Ok(Ok(response)) if response.get(..2) == query.get(..2) => {
                 return (asker, Some(response));
             },
@@ -106,19 +107,20 @@ async fn forward(servers: Vec<IpAddr>, asker: Asker, query: Vec<u8>) -> (Asker, 
     (asker, dns::failure(&query))
 }
 
-async fn ask(asker: Asker, server: IpAddr, query: &[u8]) -> io::Result<Vec<u8>> {
+async fn ask(local: &Local, asker: Asker, server: IpAddr, query: &[u8]) -> io::Result<Vec<u8>> {
     match asker {
-        Asker::Udp(_) => ask_udp(server, query).await,
-        Asker::Tcp(_) => ask_tcp(server, query).await,
+        Asker::Udp(_) => ask_udp(local, server, query).await,
+        Asker::Tcp(_) => ask_tcp(local, server, query).await,
     }
 }
 
-async fn ask_udp(server: IpAddr, query: &[u8]) -> io::Result<Vec<u8>> {
+async fn ask_udp(local: &Local, server: IpAddr, query: &[u8]) -> io::Result<Vec<u8>> {
     let unspecified = match server {
         IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
         IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
     };
     let socket = UdpSocket::bind((unspecified, 0)).await?;
+    local.protect(socket.as_fd())?;
     socket.connect((server, DNS_PORT)).await?;
     socket.send(query).await?;
 
@@ -128,9 +130,14 @@ async fn ask_udp(server: IpAddr, query: &[u8]) -> io::Result<Vec<u8>> {
     Ok(response)
 }
 
-async fn ask_tcp(server: IpAddr, query: &[u8]) -> io::Result<Vec<u8>> {
+async fn ask_tcp(local: &Local, server: IpAddr, query: &[u8]) -> io::Result<Vec<u8>> {
     let framed = dns::frame(query).ok_or(io::ErrorKind::InvalidInput)?;
-    let mut stream = TcpStream::connect((server, DNS_PORT)).await?;
+    let socket = match server {
+        IpAddr::V4(_) => TcpSocket::new_v4()?,
+        IpAddr::V6(_) => TcpSocket::new_v6()?,
+    };
+    local.protect(socket.as_fd())?;
+    let mut stream = socket.connect(SocketAddr::new(server, DNS_PORT)).await?;
     stream.write_all(&framed).await?;
 
     let mut response = vec![0; usize::from(stream.read_u16().await?)];

@@ -5,7 +5,7 @@ use ipnet::IpNet;
 
 use super::kernel::KernelDevice;
 use super::link::Links;
-use crate::{DeviceSpec, DeviceState, NetError, PeerOp, Stun, Tun, UserspaceDevice};
+use crate::{DeviceSpec, DeviceState, Fwmark, NetError, PeerOp, Stun, Tun, UserspaceDevice};
 
 pub enum Wireguard {
     Kernel(KernelDevice),
@@ -29,8 +29,9 @@ impl Wireguard {
             .offload(true)
             .build_async()
             .map_err(NetError::Tun)?;
+        let protect = Arc::new(Fwmark(spec.fwmark));
         let mut device =
-            UserspaceDevice::new(&spec.private_key, spec.listen_port, Some(spec.fwmark), None)?;
+            UserspaceDevice::new(&spec.private_key, spec.listen_port, Some(protect), None)?;
         device.set_tun(Arc::new(Tun::offload(tun)));
 
         Ok(Self::Userspace {

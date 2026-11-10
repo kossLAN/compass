@@ -1,8 +1,10 @@
+use std::io;
 use std::net::IpAddr;
+use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
-use compass_net::{Intercept, Tun};
+use compass_net::{Intercept, Protect, Tun};
 use etherparse::IpSlice;
 use ipnet::Ipv4Net;
 use tokio::sync::mpsc;
@@ -28,16 +30,21 @@ pub struct Local {
     queries: mpsc::Sender<Vec<u8>>,
     tun: ArcSwapOption<Tun>,
     underlying: Arc<ArcSwap<Underlying>>,
+    protect: Arc<dyn Protect>,
 }
 
 impl Local {
-    pub fn new(underlying: Arc<ArcSwap<Underlying>>) -> (Arc<Self>, mpsc::Receiver<Vec<u8>>) {
+    pub fn new(
+        underlying: Arc<ArcSwap<Underlying>>,
+        protect: Arc<dyn Protect>,
+    ) -> (Arc<Self>, mpsc::Receiver<Vec<u8>>) {
         let (queries, received) = mpsc::channel(QUEUE);
         let local = Self {
             resolver: ArcSwapOption::empty(),
             queries,
             tun: ArcSwapOption::empty(),
             underlying,
+            protect,
         };
         (Arc::new(local), received)
     }
@@ -56,6 +63,10 @@ impl Local {
 
     pub fn dns_servers(&self) -> Vec<IpAddr> {
         self.underlying.load().dns_servers.clone()
+    }
+
+    pub fn protect(&self, socket: BorrowedFd<'_>) -> io::Result<()> {
+        self.protect.protect(socket)
     }
 
     pub async fn write(&self, packet: &[u8]) {

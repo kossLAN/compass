@@ -8,7 +8,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use compass_net::{AsyncDevice, NetError, Stun, Tun, UserspaceDevice};
+use compass_net::{AsyncDevice, NetError, Protect, Stun, Tun, UserspaceDevice};
 use compass_proto::{DnsName, PrivateKey, PublicKey};
 use ipnet::IpNet;
 use tokio_util::task::AbortOnDropHandle;
@@ -20,7 +20,7 @@ use super::{
 use crate::client::dns::Zones;
 use crate::client::meshes::Mesh;
 
-pub trait TunProvider: Send + Sync + 'static {
+pub trait TunProvider: Protect + 'static {
     fn establish(&self, shape: &TunShape) -> io::Result<AsyncDevice>;
 }
 
@@ -76,8 +76,9 @@ impl Platform for HostedPlatform {
         key: &PrivateKey,
         listen_port: u16,
     ) -> Result<Box<dyn Backend>, DataplaneError> {
-        let (local, queries) = Local::new(Arc::clone(&self.underlying));
-        let device = UserspaceDevice::new(key, listen_port, None, Some(local.clone()))?;
+        let protect: Arc<dyn Protect> = self.provider.clone();
+        let (local, queries) = Local::new(Arc::clone(&self.underlying), Arc::clone(&protect));
+        let device = UserspaceDevice::new(key, listen_port, Some(protect), Some(local.clone()))?;
         let resolver = tokio::spawn(resolver::serve(Arc::clone(&local), queries));
 
         Ok(Box::new(Hosted {
