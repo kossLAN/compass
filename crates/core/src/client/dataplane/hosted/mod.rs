@@ -14,7 +14,8 @@ use tokio_util::task::AbortOnDropHandle;
 
 use self::local::{Local, Resolver};
 use super::{
-    Backend, DataplaneError, HubPlan, LocalNetworks, Names, Plan, Platform, Stats, default_routes,
+    Backend, DataplaneError, HubPlan, LocalNetworks, Names, Plan, Platform, Readiness, Stats,
+    default_routes,
 };
 use crate::client::dns::Zones;
 
@@ -84,6 +85,7 @@ impl Platform for HostedPlatform {
             local,
             resolver: AbortOnDropHandle::new(resolver),
             provider: Arc::clone(&self.provider),
+            readiness: Readiness::default(),
             shape: None,
             dns: Dns::default(),
             shadowed: Vec::new(),
@@ -102,6 +104,7 @@ struct Hosted {
     local: Arc<Local>,
     resolver: AbortOnDropHandle<()>,
     provider: Arc<dyn TunProvider>,
+    readiness: Readiness,
     shape: Option<TunShape>,
     dns: Dns,
     shadowed: Vec<(usize, DnsName)>,
@@ -154,6 +157,7 @@ impl Hosted {
             return Ok(());
         }
 
+        let _suspended = self.readiness.suspend();
         let provider = Arc::clone(&self.provider);
         let requested = shape.clone();
         let tun = tokio::task::spawn_blocking(move || provider.establish(&requested))
@@ -198,5 +202,9 @@ impl Backend for Hosted {
 
     fn stun(&self) -> Option<Stun> {
         Some(Stun::Userspace(self.device.stun()))
+    }
+
+    fn readiness(&self) -> Readiness {
+        self.readiness.clone()
     }
 }

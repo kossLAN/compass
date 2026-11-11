@@ -1,6 +1,7 @@
 mod hosted;
 #[cfg(feature = "linux")]
 mod linux;
+mod readiness;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
@@ -13,6 +14,7 @@ use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 pub use self::hosted::{HostedPlatform, TunProvider, TunShape, Underlying};
 #[cfg(feature = "linux")]
 pub use self::linux::LinuxPlatform;
+pub use self::readiness::Readiness;
 use crate::client::meshes::Mesh;
 
 pub const KEEPALIVE: u16 = 25;
@@ -218,6 +220,10 @@ pub trait Backend: Send + Sync {
     async fn teardown(&mut self);
 
     fn stun(&self) -> Option<Stun>;
+
+    fn readiness(&self) -> Readiness {
+        Readiness::default()
+    }
 
     async fn check_exit_serving(&mut self, _meshes: &[Mesh]) -> Result<(), DataplaneError> {
         Ok(())

@@ -636,9 +636,11 @@ impl<P: Platform> Agent<P> {
 
         self.tick().await;
 
-        let Some(relay) = self.engine.as_ref().map(Engine::relay) else {
+        let Some(engine) = &self.engine else {
             return;
         };
+        let relay = engine.relay();
+        let tunnel = engine.readiness();
 
         for (index, (lighthouse, client)) in self.lighthouses.iter_mut().zip(clients).enumerate() {
             self.sessions_started += 1;
@@ -648,6 +650,7 @@ impl<P: Platform> Agent<P> {
                 client,
                 relay: Arc::clone(&relay),
                 lighthouse: index,
+                tunnel: tunnel.clone(),
             };
             let info = self.infos[lighthouse.mesh].subscribe();
             let task = tokio::spawn(session.run(id, info, outgoing, self.events.clone()));

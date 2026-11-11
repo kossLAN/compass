@@ -14,7 +14,9 @@ use compass_proto::{
 use ipnet::IpNet;
 use tokio::sync::mpsc;
 
-use crate::client::dataplane::{Backend, DataplaneError, Names, Path, Plan, Platform, Stats};
+use crate::client::dataplane::{
+    Backend, DataplaneError, Names, Path, Plan, Platform, Readiness, Stats,
+};
 use crate::client::dns;
 use crate::client::ice::{self, IceEvent, IceHandle, IcePeer};
 use crate::client::meshes::Mesh;
@@ -190,6 +192,10 @@ impl Engine {
 
     pub fn relay(&self) -> Arc<Relay> {
         Arc::clone(&self.relay)
+    }
+
+    pub fn readiness(&self) -> Readiness {
+        self.backend.readiness()
     }
 
     pub async fn apply(&mut self, view: View) -> Result<(), DataplaneError> {

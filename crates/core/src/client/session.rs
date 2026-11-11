@@ -5,6 +5,7 @@ use compass_proto::{ErrorCode, NetMapResponse, NodeId, NodeInfo, SignalEnvelope,
 use tokio::sync::{mpsc, watch};
 
 use crate::client::api::{ApiClient, ApiError};
+use crate::client::dataplane::Readiness;
 use crate::client::relay::Relay;
 
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
@@ -22,6 +23,7 @@ pub struct Session {
     pub client: ApiClient,
     pub relay: Arc<Relay>,
     pub lighthouse: usize,
+    pub tunnel: Readiness,
 }
 
 struct Emitter {
@@ -47,6 +49,7 @@ impl Session {
         let mut backoff = Backoff::default();
 
         loop {
+            let generation = self.tunnel.ready().await;
             let current = info.borrow_and_update().clone();
 
             let error = match self.client.announce(&current).await {
@@ -67,6 +70,10 @@ impl Session {
                 },
                 Err(error) => error,
             };
+
+            if self.tunnel.generation() != generation {
+                continue;
+            }
 
             emit.send(SessionEvent::Error(error.describe())).await;
             tokio::time::sleep(backoff.next()).await;
