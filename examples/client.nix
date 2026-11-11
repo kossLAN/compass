@@ -81,9 +81,9 @@
             };
 
             exit_node = {
-              # Send this machine's internet traffic through another node. That only happens
-              # while there is a direct path to it. If the path drops, the traffic is blocked
-              # rather than sent out the normal way. Only one mesh can have an exit node, and
+              # Send this machine's internet traffic through another node, over a direct path
+              # or a relay. While that node can't be reached, the traffic is blocked rather
+              # than sent out the normal way. Only one mesh can have an exit node, and
               # `compass exit-node` overrides this until the next restart.
               peer = "web";
               # Let other nodes use this machine as their exit node. The lighthouse also has

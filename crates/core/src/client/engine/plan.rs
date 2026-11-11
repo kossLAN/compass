@@ -20,6 +20,14 @@ pub struct Inputs<'a> {
     pub local_dns: Option<IpAddr>,
 }
 
+impl Inputs<'_> {
+    fn reaches(&self, peer: &Peer) -> bool {
+        let direct = self.direct.contains_key(&peer.key);
+        let relayed = self.view.attached.contains_key(&peer.key);
+        direct || relayed
+    }
+}
+
 struct Merged<'a> {
     peer: &'a Peer,
     addresses: Vec<IpAddr>,
@@ -80,9 +88,7 @@ pub fn build(inputs: &Inputs<'_>) -> Plan {
                     .peers
                     .iter()
                     .find(|peer| {
-                        peer.exit_node
-                            && peer.hostname == exit_node.peer
-                            && inputs.direct.contains_key(&peer.key)
+                        peer.exit_node && peer.hostname == exit_node.peer && inputs.reaches(peer)
                     })
                     .map(|peer| (peer.key, mesh.addresses.clone()))
             });

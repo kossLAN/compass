@@ -13,8 +13,8 @@ Machines connect to each other directly whenever they can.
 - **NAT traversal.** Peers talk directly when hole punching works, and relay through a
   lighthouse when it doesn't. Relayed packets are still WireGuard-encrypted between the two
   peers, so the lighthouse only forwards them.
-- **Exit nodes.** You can send your internet traffic through another node. If the direct path
-  to it drops, that traffic is blocked instead of leaking out.
+- **Exit nodes.** You can send your internet traffic through another node, directly or through
+  a relay. While that node can't be reached, the traffic is blocked instead of leaking out.
 
 ## Setup
 
