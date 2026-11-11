@@ -130,6 +130,7 @@ impl Hosted {
             .iter()
             .flat_map(|mesh| mesh.prefixes.iter().copied())
             .chain(plan.hubs.iter().map(HubPlan::address))
+            .chain(self.dns.servers.iter().copied().map(IpNet::from))
             .collect();
 
         if plan.exit.is_some() {
