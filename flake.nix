@@ -33,7 +33,8 @@
 
             cargoLock.lockFile = ./Cargo.lock;
 
-            nativeBuildInputs = [ pkgs.cmake ];
+            nativeBuildInputs = [ pkgs.pkg-config ];
+            buildInputs = [ pkgs.aws-lc ];
 
             cargoBuildFlags = [
               "-p"
